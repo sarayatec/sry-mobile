@@ -30,6 +30,7 @@
     "zustand": "^5.0.2"
   },
   "overrides": {
+    "expo-font": "~13.0.4",
     "metro": "0.81.3",
     "metro-babel-transformer": "0.81.3",
     "metro-cache": "0.81.3",
