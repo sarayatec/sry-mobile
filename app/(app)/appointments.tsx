@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import {
-  View, Text, FlatList, TouchableOpacity,
-  ActivityIndicator, RefreshControl, Alert,
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import api from '../../src/services/api';
 import { FieldAppointment, AppointmentStatus } from '../../src/types';
@@ -15,8 +12,8 @@ const STATUS_MAP: Record<AppointmentStatus, { label: string; fg: string; bg: str
 };
 
 export default function AppointmentsScreen() {
-  const [list, setList]           = useState<FieldAppointment[]>([]);
-  const [loading, setLoading]     = useState(true);
+  const [list, setList] = useState<FieldAppointment[]>([]);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
@@ -28,140 +25,112 @@ export default function AppointmentsScreen() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const updateStatus = async (id: number, status: AppointmentStatus) => {
     try {
       await api.patch(`/mobile/appointments/${id}`, { status });
-      setList(prev => prev.map(a => (a.id === id ? { ...a, status } : a)));
-    } catch {
-      Alert.alert('خطأ', 'تعذّر تحديث الحالة، حاول مجدداً');
-    }
+      setList(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+    } catch { Alert.alert('خطأ', 'تعذّر تحديث الحالة، حاول مجدداً'); }
   };
 
-  const confirmStatus = (item: FieldAppointment, next: AppointmentStatus) => {
-    const labels: Record<AppointmentStatus, string> = {
-      pending: 'إعادة للانتظار',
-      in_progress: 'بدء الموعد',
-      done: 'إتمام الموعد',
-      cancelled: 'إلغاء الموعد',
-    };
-    Alert.alert(labels[next], `"${item.title}" — هل تريد تغيير الحالة؟`, [
+  const confirm = (item: FieldAppointment, next: AppointmentStatus, label: string) =>
+    Alert.alert(label, `"${item.title}" — هل تريد تغيير الحالة؟`, [
       { text: 'إلغاء', style: 'cancel' },
       { text: 'تأكيد', onPress: () => updateStatus(item.id, next) },
     ]);
-  };
 
   const renderItem = ({ item }: { item: FieldAppointment }) => {
-    const s = STATUS_MAP[item.status];
+    const st = STATUS_MAP[item.status];
     const dt = new Date(item.scheduled_at);
     const timeStr = dt.toLocaleTimeString('ar-OM', { hour: '2-digit', minute: '2-digit' });
     const dateStr = dt.toLocaleDateString('ar-OM', { weekday: 'short', day: 'numeric', month: 'short' });
 
     return (
-      <View className="bg-white rounded-3xl mx-4 mb-3 p-5 shadow-sm">
-        {/* Top row */}
-        <View className="flex-row justify-between items-start mb-3">
-          <View className="rounded-full px-3 py-1.5" style={{ backgroundColor: s.bg }}>
-            <Text className="text-xs font-bold" style={{ color: s.fg }}>{s.label}</Text>
+      <View style={s.card}>
+        <View style={s.cardTop}>
+          <View style={[s.badge, { backgroundColor: st.bg }]}>
+            <Text style={[s.badgeText, { color: st.fg }]}>{st.label}</Text>
           </View>
-          <View className="items-end flex-1 mr-3">
-            <Text className="text-blue-900 font-black text-base text-right leading-tight" numberOfLines={2}>
-              {item.title}
-            </Text>
-            {item.property_code && (
-              <Text className="text-gray-400 text-xs mt-0.5">{item.property_code}</Text>
-            )}
+          <View style={{ flex: 1, alignItems: 'flex-end', marginLeft: 12 }}>
+            <Text style={s.title} numberOfLines={2}>{item.title}</Text>
+            {item.property_code && <Text style={s.code}>{item.property_code}</Text>}
           </View>
         </View>
 
-        {/* Address */}
         {item.address && (
-          <View className="flex-row items-center justify-end mb-2">
-            <Text className="text-gray-600 text-sm text-right mr-1" numberOfLines={2}>
-              {item.address}
-            </Text>
+          <View style={s.addrRow}>
+            <Text style={s.addrText} numberOfLines={2}>{item.address}</Text>
             <Ionicons name="location-outline" size={13} color="#6b7280" />
           </View>
         )}
+        {item.description && <Text style={s.desc}>{item.description}</Text>}
 
-        {/* Description */}
-        {item.description && (
-          <Text className="text-gray-500 text-sm text-right mb-3 leading-relaxed">
-            {item.description}
-          </Text>
-        )}
-
-        {/* Footer */}
-        <View className="flex-row items-center justify-between pt-3 border-t border-gray-100">
-          {/* Action buttons */}
-          <View className="flex-row gap-x-2">
+        <View style={s.footer}>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
             {item.status === 'pending' && (
-              <TouchableOpacity
-                onPress={() => confirmStatus(item, 'in_progress')}
-                className="bg-blue-100 rounded-xl px-3.5 py-2"
-              >
-                <Text className="text-blue-700 text-xs font-bold">ابدأ</Text>
+              <TouchableOpacity onPress={() => confirm(item, 'in_progress', 'بدء الموعد')} style={s.btnBlue}>
+                <Text style={s.btnBlueText}>ابدأ</Text>
               </TouchableOpacity>
             )}
             {item.status === 'in_progress' && (
-              <TouchableOpacity
-                onPress={() => confirmStatus(item, 'done')}
-                className="bg-green-100 rounded-xl px-3.5 py-2"
-              >
-                <Text className="text-green-700 text-xs font-bold">إتمام ✓</Text>
+              <TouchableOpacity onPress={() => confirm(item, 'done', 'إتمام الموعد')} style={s.btnGreen}>
+                <Text style={s.btnGreenText}>إتمام ✓</Text>
               </TouchableOpacity>
             )}
             {(item.status === 'pending' || item.status === 'in_progress') && (
-              <TouchableOpacity
-                onPress={() => confirmStatus(item, 'cancelled')}
-                className="bg-red-50 rounded-xl px-3.5 py-2"
-              >
-                <Text className="text-red-500 text-xs font-bold">إلغاء</Text>
+              <TouchableOpacity onPress={() => confirm(item, 'cancelled', 'إلغاء الموعد')} style={s.btnRed}>
+                <Text style={s.btnRedText}>إلغاء</Text>
               </TouchableOpacity>
             )}
           </View>
-
-          {/* Date & time */}
-          <View className="items-end">
-            <Text className="text-blue-800 font-black text-sm">{timeStr}</Text>
-            <Text className="text-gray-400 text-xs">{dateStr}</Text>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={s.time}>{timeStr}</Text>
+            <Text style={s.date}>{dateStr}</Text>
           </View>
         </View>
       </View>
     );
   };
 
-  if (loading) {
-    return (
-      <View className="flex-1 items-center justify-center bg-gray-50">
-        <ActivityIndicator size="large" color="#1e40af" />
-      </View>
-    );
-  }
+  if (loading) return <View style={s.center}><ActivityIndicator size="large" color="#1e40af" /></View>;
 
   return (
-    <FlatList
-      data={list}
-      keyExtractor={item => String(item.id)}
-      renderItem={renderItem}
-      className="flex-1 bg-gray-50"
+    <FlatList data={list} keyExtractor={item => String(item.id)} renderItem={renderItem}
+      style={{ flex: 1, backgroundColor: '#f8fafc' }}
       contentContainerStyle={{ paddingTop: 14, paddingBottom: 30 }}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />
-      }
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
       ListEmptyComponent={
-        <View className="items-center justify-center py-24">
+        <View style={s.center}>
           <Ionicons name="calendar-outline" size={56} color="#d1d5db" />
-          <Text className="text-gray-400 mt-4 text-base font-medium">
-            لا توجد مواعيد اليوم
-          </Text>
-          <Text className="text-gray-300 text-sm mt-1">
-            اسحب للأسفل للتحديث
-          </Text>
+          <Text style={s.emptyTitle}>لا توجد مواعيد اليوم</Text>
+          <Text style={s.emptySub}>اسحب للأسفل للتحديث</Text>
         </View>
       }
     />
   );
 }
+
+const s = StyleSheet.create({
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
+  card: { backgroundColor: '#fff', borderRadius: 20, marginHorizontal: 16, marginBottom: 12, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  cardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
+  badge: { borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4 },
+  badgeText: { fontSize: 12, fontWeight: '700' },
+  title: { color: '#1e3a8a', fontWeight: '900', fontSize: 15, textAlign: 'right', lineHeight: 22 },
+  code: { color: '#9ca3af', fontSize: 11, marginTop: 2 },
+  addrRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 6 },
+  addrText: { color: '#6b7280', fontSize: 13, textAlign: 'right', marginLeft: 4 },
+  desc: { color: '#9ca3af', fontSize: 13, textAlign: 'right', marginBottom: 10, lineHeight: 20 },
+  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#f3f4f6', marginTop: 4 },
+  btnBlue: { backgroundColor: '#dbeafe', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
+  btnBlueText: { color: '#1d4ed8', fontSize: 13, fontWeight: '700' },
+  btnGreen: { backgroundColor: '#d1fae5', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
+  btnGreenText: { color: '#065f46', fontSize: 13, fontWeight: '700' },
+  btnRed: { backgroundColor: '#fee2e2', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
+  btnRedText: { color: '#991b1b', fontSize: 13, fontWeight: '700' },
+  time: { color: '#1e40af', fontWeight: '900', fontSize: 14 },
+  date: { color: '#9ca3af', fontSize: 11 },
+  emptyTitle: { color: '#9ca3af', marginTop: 16, fontSize: 15, fontWeight: '600' },
+  emptySub: { color: '#d1d5db', fontSize: 13, marginTop: 4 },
+});

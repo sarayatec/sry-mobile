@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   KeyboardAvoidingView, Platform, ActivityIndicator,
-  Alert, ScrollView,
+  Alert, ScrollView, StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
@@ -31,87 +31,70 @@ export default function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      className="flex-1 bg-blue-900"
-    >
-      <ScrollView
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', paddingHorizontal: 28 }}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Logo */}
-        <View className="items-center mb-10">
-          <View className="w-24 h-24 bg-white rounded-3xl items-center justify-center mb-5 shadow-2xl">
-            <Text className="text-blue-900 text-4xl font-black tracking-tight">SRY</Text>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={s.root}>
+      <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
+        <View style={s.logoWrap}>
+          <View style={s.logoBox}>
+            <Text style={s.logoText}>SRY</Text>
           </View>
-          <Text className="text-white text-2xl font-bold tracking-wide">SRY Field</Text>
-          <Text className="text-blue-300 text-sm mt-1">نظام الموظفين الميدانيين</Text>
+          <Text style={s.appName}>SRY Field</Text>
+          <Text style={s.appSub}>نظام الموظفين الميدانيين</Text>
         </View>
 
-        {/* Card */}
-        <View className="bg-white rounded-3xl p-7 shadow-2xl">
-          {/* Email */}
-          <Text className="text-gray-600 text-right text-sm font-medium mb-1.5">
-            البريد الإلكتروني
-          </Text>
-          <View className="flex-row-reverse items-center border border-gray-200 rounded-2xl px-4 mb-4 bg-gray-50">
-            <Ionicons name="mail-outline" size={18} color="#9ca3af" style={{ marginLeft: 8 }} />
+        <View style={s.card}>
+          <Text style={s.label}>البريد الإلكتروني</Text>
+          <View style={s.inputRow}>
+            <Ionicons name="mail-outline" size={18} color="#9ca3af" style={s.inputIcon} />
             <TextInput
-              value={email}
-              onChangeText={setEmail}
-              placeholder="example@email.com"
-              placeholderTextColor="#9ca3af"
-              textAlign="right"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              className="flex-1 py-3.5 text-gray-800"
+              value={email} onChangeText={setEmail}
+              placeholder="example@email.com" placeholderTextColor="#9ca3af"
+              textAlign="right" keyboardType="email-address"
+              autoCapitalize="none" autoCorrect={false}
+              style={s.input}
             />
           </View>
 
-          {/* Password */}
-          <Text className="text-gray-600 text-right text-sm font-medium mb-1.5">
-            كلمة المرور
-          </Text>
-          <View className="flex-row-reverse items-center border border-gray-200 rounded-2xl px-4 mb-6 bg-gray-50">
-            <Ionicons name="lock-closed-outline" size={18} color="#9ca3af" style={{ marginLeft: 8 }} />
-            <TextInput
-              value={password}
-              onChangeText={setPassword}
-              placeholder="••••••••"
-              placeholderTextColor="#9ca3af"
-              secureTextEntry={!showPassword}
-              textAlign="right"
-              className="flex-1 py-3.5 text-gray-800"
-            />
+          <Text style={[s.label, { marginTop: 14 }]}>كلمة المرور</Text>
+          <View style={s.inputRow}>
             <TouchableOpacity onPress={() => setShowPassword(p => !p)}>
-              <Ionicons
-                name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                size={18}
-                color="#9ca3af"
-                style={{ marginRight: 4 }}
-              />
+              <Ionicons name={showPassword ? 'eye-off-outline' : 'eye-outline'} size={18} color="#9ca3af" />
             </TouchableOpacity>
+            <TextInput
+              value={password} onChangeText={setPassword}
+              placeholder="••••••••" placeholderTextColor="#9ca3af"
+              secureTextEntry={!showPassword} textAlign="right"
+              style={[s.input, { flex: 1 }]}
+            />
           </View>
 
-          {/* Submit */}
-          <TouchableOpacity
-            onPress={handleLogin}
-            disabled={submitting}
-            activeOpacity={0.85}
-            className="bg-blue-800 rounded-2xl py-4 items-center shadow"
-          >
+          <TouchableOpacity onPress={handleLogin} disabled={submitting} style={s.btn} activeOpacity={0.85}>
             {submitting
               ? <ActivityIndicator color="#fff" />
-              : <Text className="text-white text-base font-bold">تسجيل الدخول</Text>
+              : <Text style={s.btnText}>تسجيل الدخول</Text>
             }
           </TouchableOpacity>
         </View>
 
-        <Text className="text-blue-500 text-center text-xs mt-8">
-          Sarayatec © 2026 — v1.0
-        </Text>
+        <Text style={s.footer}>Sarayatec © 2026 — v1.0</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
+
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#1e3a8a' },
+  scroll: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 28 },
+  logoWrap: { alignItems: 'center', marginBottom: 36 },
+  logoBox: { width: 96, height: 96, backgroundColor: '#fff', borderRadius: 24, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  logoText: { fontSize: 36, fontWeight: '900', color: '#1e3a8a' },
+  appName: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
+  appSub: { color: '#93c5fd', fontSize: 13, marginTop: 4 },
+  card: { backgroundColor: '#fff', borderRadius: 24, padding: 24 },
+  label: { color: '#374151', fontSize: 13, fontWeight: '600', textAlign: 'right', marginBottom: 6 },
+  inputRow: { flexDirection: 'row-reverse', alignItems: 'center', borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 16, paddingHorizontal: 14, marginBottom: 4, backgroundColor: '#f9fafb' },
+  inputIcon: { marginLeft: 8 },
+  input: { flex: 1, paddingVertical: 14, color: '#111827', fontSize: 15 },
+  btn: { backgroundColor: '#1e40af', borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginTop: 20 },
+  btnText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  footer: { color: '#60a5fa', textAlign: 'center', fontSize: 12, marginTop: 32 },
+});

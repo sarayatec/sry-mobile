@@ -1,28 +1,20 @@
 import { useEffect, useState, useCallback } from 'react';
-import {
-  View, Text, TouchableOpacity, ScrollView,
-  Alert, ActivityIndicator, RefreshControl,
-} from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, RefreshControl, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import api from '../../src/services/api';
 import { useAuthStore } from '../../src/stores/authStore';
-import {
-  requestPermissions, startTracking, stopTracking, isTracking,
-} from '../../src/services/location';
+import { requestPermissions, startTracking, stopTracking, isTracking } from '../../src/services/location';
 import { FieldAppointment } from '../../src/types';
 
 export default function DashboardScreen() {
-  const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
-
-  const [tracking, setTracking]           = useState(false);
-  const [toggling, setToggling]           = useState(false);
-  const [lastPos, setLastPos]             = useState<Location.LocationObject | null>(null);
-  const [todayTotal, setTodayTotal]       = useState(0);
-  const [todayPending, setTodayPending]   = useState(0);
-  const [refreshing, setRefreshing]       = useState(false);
+  const [tracking, setTracking] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [lastPos, setLastPos] = useState<Location.LocationObject | null>(null);
+  const [todayTotal, setTodayTotal] = useState(0);
+  const [todayPending, setTodayPending] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     const [running, pos] = await Promise.all([
@@ -31,7 +23,6 @@ export default function DashboardScreen() {
     ]);
     setTracking(running);
     setLastPos(pos);
-
     try {
       const { data } = await api.get<FieldAppointment[]>('/mobile/appointments?today=1');
       setTodayTotal(data.length);
@@ -49,150 +40,76 @@ export default function DashboardScreen() {
     setToggling(true);
     try {
       if (tracking) {
-        Alert.alert(
-          'إيقاف الجلسة',
-          'سيتوقف إرسال موقعك. هل أنت متأكد؟',
-          [
-            { text: 'إلغاء', style: 'cancel', onPress: () => setToggling(false) },
-            {
-              text: 'إيقاف', style: 'destructive',
-              onPress: async () => {
-                await stopTracking();
-                setTracking(false);
-                setToggling(false);
-              },
-            },
-          ]
-        );
+        Alert.alert('إيقاف الجلسة', 'سيتوقف إرسال موقعك. هل أنت متأكد؟', [
+          { text: 'إلغاء', style: 'cancel', onPress: () => setToggling(false) },
+          { text: 'إيقاف', style: 'destructive', onPress: async () => { await stopTracking(); setTracking(false); setToggling(false); } },
+        ]);
       } else {
         const ok = await requestPermissions();
-        if (!ok) {
-          Alert.alert(
-            'صلاحية مطلوبة',
-            'اسمح لـ SRY Field بالوصول للموقع دائماً من إعدادات الجهاز.',
-          );
-          setToggling(false);
-          return;
-        }
+        if (!ok) { Alert.alert('صلاحية مطلوبة', 'اسمح بالوصول للموقع دائماً من الإعدادات.'); setToggling(false); return; }
         await startTracking();
         setTracking(true);
         setToggling(false);
       }
-    } catch (e: any) {
-      Alert.alert('خطأ', e.message);
-      setToggling(false);
-    }
-  };
-
-  const handleLogout = () => {
-    Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
-      { text: 'إلغاء', style: 'cancel' },
-      { text: 'خروج', style: 'destructive', onPress: logout },
-    ]);
+    } catch (e: any) { Alert.alert('خطأ', e.message); setToggling(false); }
   };
 
   const onRefresh = async () => { setRefreshing(true); await refresh(); setRefreshing(false); };
 
   return (
-    <ScrollView
-      className="flex-1 bg-gray-50"
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}
-    >
-      {/* Header */}
-      <View className="bg-blue-900 px-5 pb-10 pt-2">
-        <View className="flex-row justify-between items-center">
-          <TouchableOpacity onPress={handleLogout} hitSlop={12}>
-            <Ionicons name="log-out-outline" size={22} color="#93c5fd" />
-          </TouchableOpacity>
-          <View className="items-end">
-            <Text className="text-blue-300 text-xs mb-0.5">مرحباً،</Text>
-            <Text className="text-white text-lg font-bold">{user?.name}</Text>
-          </View>
-        </View>
-
-        <View className="flex-row items-center mt-3">
-          <View
-            className={`w-2.5 h-2.5 rounded-full mr-2 ${tracking ? 'bg-green-400' : 'bg-gray-500'}`}
-          />
-          <Text className="text-blue-200 text-sm">
-            {tracking ? 'جلسة نشطة — موقعك يُرسل كل 30 ث' : 'لا توجد جلسة نشطة'}
-          </Text>
+    <ScrollView style={s.root} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}>
+      <View style={s.header}>
+        <TouchableOpacity onPress={() => Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [{ text: 'إلغاء', style: 'cancel' }, { text: 'خروج', style: 'destructive', onPress: logout }])}>
+          <Ionicons name="log-out-outline" size={22} color="#93c5fd" />
+        </TouchableOpacity>
+        <View style={{ alignItems: 'flex-end' }}>
+          <Text style={s.greet}>مرحباً،</Text>
+          <Text style={s.userName}>{user?.name}</Text>
         </View>
       </View>
+      <View style={s.statusRow}>
+        <View style={[s.dot, { backgroundColor: tracking ? '#4ade80' : '#6b7280' }]} />
+        <Text style={s.statusText}>{tracking ? 'جلسة نشطة — موقعك يُرسل كل 30 ث' : 'لا توجد جلسة نشطة'}</Text>
+      </View>
 
-      <View className="px-5 -mt-6 pb-8 gap-y-4">
-        {/* Session toggle */}
-        <TouchableOpacity
-          onPress={handleToggle}
-          disabled={toggling}
-          activeOpacity={0.88}
-          className={`rounded-3xl p-5 shadow-md flex-row items-center justify-between ${
-            tracking ? 'bg-green-500' : 'bg-white'
-          }`}
-        >
+      <View style={s.body}>
+        <TouchableOpacity onPress={handleToggle} disabled={toggling} activeOpacity={0.88}
+          style={[s.toggleCard, tracking && s.toggleCardActive]}>
           <View>
-            <Text className={`text-xl font-black ${tracking ? 'text-white' : 'text-gray-800'}`}>
-              {tracking ? 'جلسة نشطة' : 'ابدأ جلسة العمل'}
-            </Text>
-            <Text className={`text-sm mt-1 ${tracking ? 'text-green-100' : 'text-gray-400'}`}>
-              {tracking ? 'اضغط لإيقاف التتبع' : 'سيُرسل موقعك للمشرف تلقائياً'}
-            </Text>
+            <Text style={[s.toggleTitle, tracking && { color: '#fff' }]}>{tracking ? 'جلسة نشطة' : 'ابدأ جلسة العمل'}</Text>
+            <Text style={[s.toggleSub, tracking && { color: '#d1fae5' }]}>{tracking ? 'اضغط لإيقاف التتبع' : 'سيُرسل موقعك للمشرف تلقائياً'}</Text>
           </View>
-          {toggling
-            ? <ActivityIndicator color={tracking ? '#fff' : '#1e40af'} />
-            : <Ionicons
-                name={tracking ? 'radio' : 'radio-outline'}
-                size={36}
-                color={tracking ? '#fff' : '#1e40af'}
-              />
-          }
+          {toggling ? <ActivityIndicator color={tracking ? '#fff' : '#1e40af'} /> : <Ionicons name={tracking ? 'radio' : 'radio-outline'} size={36} color={tracking ? '#fff' : '#1e40af'} />}
         </TouchableOpacity>
 
-        {/* Stats */}
-        <View className="flex-row gap-x-3">
-          <StatCard
-            icon="calendar-outline"
-            label="مواعيد اليوم"
-            value={todayTotal}
-            bg="bg-blue-50"
-            textColor="text-blue-800"
-            iconColor="#1e40af"
-          />
-          <StatCard
-            icon="time-outline"
-            label="قيد الانتظار"
-            value={todayPending}
-            bg="bg-amber-50"
-            textColor="text-amber-800"
-            iconColor="#d97706"
-          />
+        <View style={s.statsRow}>
+          <View style={s.statCard}>
+            <Ionicons name="calendar-outline" size={20} color="#1e40af" />
+            <Text style={s.statNum}>{todayTotal}</Text>
+            <Text style={s.statLabel}>مواعيد اليوم</Text>
+          </View>
+          <View style={[s.statCard, { backgroundColor: '#fffbeb' }]}>
+            <Ionicons name="time-outline" size={20} color="#d97706" />
+            <Text style={[s.statNum, { color: '#92400e' }]}>{todayPending}</Text>
+            <Text style={[s.statLabel, { color: '#92400e' }]}>قيد الانتظار</Text>
+          </View>
         </View>
 
-        {/* Last location */}
         {lastPos && (
-          <View className="bg-white rounded-3xl p-4 shadow-sm">
-            <View className="flex-row items-center mb-2">
+          <View style={s.posCard}>
+            <View style={s.posRow}>
               <Ionicons name="location" size={15} color="#3b82f6" />
-              <Text className="text-gray-700 font-semibold text-sm mr-1.5">آخر موقع مسجَّل</Text>
+              <Text style={s.posTitle}>آخر موقع مسجَّل</Text>
             </View>
-            <Text className="text-gray-500 text-xs font-mono" numberOfLines={1}>
-              {lastPos.coords.latitude.toFixed(7)}, {lastPos.coords.longitude.toFixed(7)}
-            </Text>
-            {lastPos.coords.accuracy != null && (
-              <Text className="text-gray-400 text-xs mt-0.5">
-                الدقة ±{Math.round(lastPos.coords.accuracy)} م
-              </Text>
-            )}
+            <Text style={s.posCoords}>{lastPos.coords.latitude.toFixed(6)}, {lastPos.coords.longitude.toFixed(6)}</Text>
+            {lastPos.coords.accuracy != null && <Text style={s.posAcc}>الدقة ±{Math.round(lastPos.coords.accuracy)} م</Text>}
           </View>
         )}
 
-        {/* Admin badge */}
         {user?.role === 'admin' && (
-          <View className="flex-row items-center bg-amber-50 border border-amber-200 rounded-3xl px-4 py-3.5">
+          <View style={s.adminBadge}>
             <Ionicons name="shield-checkmark" size={18} color="#b45309" />
-            <Text className="text-amber-700 font-semibold text-sm mr-2">
-              أنت مسؤول النظام — تظهر لك مواقع جميع الموظفين
-            </Text>
+            <Text style={s.adminText}>أنت مسؤول النظام — تظهر لك مواقع جميع الموظفين</Text>
           </View>
         )}
       </View>
@@ -200,21 +117,28 @@ export default function DashboardScreen() {
   );
 }
 
-function StatCard({
-  icon, label, value, bg, textColor, iconColor,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  label: string;
-  value: number;
-  bg: string;
-  textColor: string;
-  iconColor: string;
-}) {
-  return (
-    <View className={`flex-1 rounded-3xl p-4 shadow-sm ${bg}`}>
-      <Ionicons name={icon} size={20} color={iconColor} />
-      <Text className={`text-3xl font-black mt-2 ${textColor}`}>{value}</Text>
-      <Text className={`text-xs mt-0.5 opacity-70 ${textColor}`}>{label}</Text>
-    </View>
-  );
-}
+const s = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#f8fafc' },
+  header: { backgroundColor: '#1e3a8a', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 },
+  greet: { color: '#93c5fd', fontSize: 12 },
+  userName: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  statusRow: { backgroundColor: '#1e3a8a', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 28 },
+  dot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  statusText: { color: '#bfdbfe', fontSize: 13 },
+  body: { padding: 20, marginTop: -16 },
+  toggleCard: { backgroundColor: '#fff', borderRadius: 24, padding: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 8, elevation: 3 },
+  toggleCardActive: { backgroundColor: '#22c55e' },
+  toggleTitle: { fontSize: 20, fontWeight: '900', color: '#1e293b' },
+  toggleSub: { fontSize: 13, color: '#94a3b8', marginTop: 4 },
+  statsRow: { flexDirection: 'row', gap: 12, marginBottom: 16 },
+  statCard: { flex: 1, backgroundColor: '#eff6ff', borderRadius: 20, padding: 16 },
+  statNum: { fontSize: 32, fontWeight: '900', color: '#1e40af', marginTop: 8 },
+  statLabel: { fontSize: 12, color: '#1e40af', opacity: 0.7 },
+  posCard: { backgroundColor: '#fff', borderRadius: 20, padding: 16, marginBottom: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
+  posRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  posTitle: { color: '#374151', fontWeight: '600', fontSize: 13, marginLeft: 6 },
+  posCoords: { color: '#6b7280', fontSize: 12, fontFamily: 'monospace' },
+  posAcc: { color: '#9ca3af', fontSize: 11, marginTop: 2 },
+  adminBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a', borderRadius: 20, padding: 14 },
+  adminText: { color: '#92400e', fontWeight: '600', fontSize: 13, marginLeft: 8 },
+});
