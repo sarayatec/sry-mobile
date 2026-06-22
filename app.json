@@ -39,6 +39,7 @@
       }
     },
     "plugins": [
+      "./scripts/with-kotlin-version",
       "expo-router",
       [
         "expo-location",
