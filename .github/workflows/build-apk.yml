@@ -1,7 +1,7 @@
 name: Build & Deploy APK
 
 on:
-  workflow_dispatch:  # تشغيل يدوي من GitHub
+  workflow_dispatch:
 
 jobs:
   build:
@@ -24,21 +24,20 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install EAS CLI
-        run: npm install -g eas-cli
-
       - name: Install dependencies
         run: npm install
 
-      - name: Build APK (local - no EAS quota)
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      - name: Install Expo CLI
+        run: npm install -g @expo/cli
+
+      - name: Generate Android project
+        run: npx expo prebuild --platform android --clean
+
+      - name: Build Debug APK
         run: |
-          eas build --platform android --profile preview --local \
-            --non-interactive --output ./sry-field.apk
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK to server
         env:
@@ -48,7 +47,7 @@ jobs:
           chmod 600 /tmp/deploy_key
           scp -i /tmp/deploy_key \
             -o StrictHostKeyChecking=no \
-            ./sry-field.apk \
+            android/app/build/outputs/apk/debug/app-debug.apk \
             root@152.42.210.72:/var/www/html/app/sry-field.apk
           rm /tmp/deploy_key
 
