@@ -49,12 +49,7 @@
           "isAndroidForegroundServiceEnabled": true
         }
       ],
-      [
-        "expo-notifications",
-        {
-          "color": "#1e3a8a"
-        }
-      ]
+      "expo-secure-store"
     ],
     "scheme": "sryfield",
     "experiments": {
