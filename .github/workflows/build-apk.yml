@@ -15,7 +15,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Setup Java 17
@@ -25,13 +25,13 @@ jobs:
           java-version: '17'
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Install Expo CLI
         run: npm install -g @expo/cli
 
       - name: Generate Android project
-        run: npx expo prebuild --platform android --clean
+        run: npx expo prebuild --platform android --clean --no-install
 
       - name: Build Debug APK
         run: |
