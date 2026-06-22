@@ -12,7 +12,7 @@ export interface AuthResponse extends User {
 export type AppointmentStatus = 'pending' | 'in_progress' | 'done' | 'cancelled';
 
 export interface FieldAppointment {
-  id: number;
+  id: string | number;
   title: string;
   description?: string;
   property_code?: string;
@@ -20,10 +20,24 @@ export interface FieldAppointment {
   lat?: number;
   lng?: number;
   scheduled_at: string;
-  employee_id: number;
+  employee_id?: number;
   employee_name?: string;
   status: AppointmentStatus;
-  created_at: string;
+  created_at?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  appt_notes?: string;
+}
+
+export interface PropertyLocation {
+  id: number;
+  title: string;
+  location?: string;
+  property_subtype?: string;
+  lat?: number;
+  lng?: number;
+  owner_name?: string;
+  owner_number?: string;
 }
 
 export interface LiveEmployee {

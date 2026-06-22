@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import api from '../../src/services/api';
 import { FieldAppointment, AppointmentStatus } from '../../src/types';
 
@@ -12,6 +13,7 @@ const STATUS_MAP: Record<AppointmentStatus, { label: string; fg: string; bg: str
 };
 
 export default function AppointmentsScreen() {
+  const router = useRouter();
   const [list, setList] = useState<FieldAppointment[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -46,8 +48,15 @@ export default function AppointmentsScreen() {
     const timeStr = dt.toLocaleTimeString('ar-OM', { hour: '2-digit', minute: '2-digit' });
     const dateStr = dt.toLocaleDateString('ar-OM', { weekday: 'short', day: 'numeric', month: 'short' });
 
+    const openDetail = () => {
+      router.push({
+        pathname: '/(app)/appointment/[id]',
+        params: { id: String(item.id), data: JSON.stringify(item) },
+      });
+    };
+
     return (
-      <View style={s.card}>
+      <TouchableOpacity style={s.card} onPress={openDetail} activeOpacity={0.85}>
         <View style={s.cardTop}>
           <View style={[s.badge, { backgroundColor: st.bg }]}>
             <Text style={[s.badgeText, { color: st.fg }]}>{st.label}</Text>
@@ -89,7 +98,7 @@ export default function AppointmentsScreen() {
             <Text style={s.date}>{dateStr}</Text>
           </View>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 

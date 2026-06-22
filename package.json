@@ -27,6 +27,11 @@
     "react-native-maps": "1.18.0",
     "react-native-safe-area-context": "4.12.0",
     "react-native-screens": "~4.4.0",
+    "react-native-webrtc": "^118.0.0",
+    "react-native-webview": "13.12.5",
+    "socket.io-client": "^4.7.2",
+    "expo-notifications": "~0.29.0",
+    "pip": "file:./modules/pip",
     "zustand": "^5.0.2"
   },
   "overrides": {

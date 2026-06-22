@@ -1,0 +1,7 @@
+{
+  "name": "pip",
+  "version": "1.0.0",
+  "description": "PiP native module for SRY Field",
+  "main": "index.ts",
+  "files": ["android", "expo-module.config.json", "index.ts"]
+}

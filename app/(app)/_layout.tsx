@@ -1,6 +1,8 @@
+import { useEffect } from 'react';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
+import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -10,6 +12,14 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 
 export default function AppLayout() {
   const { user, loading } = useAuthStore();
+
+  useEffect(() => {
+    if (user) {
+      startSignaling(String(user.id), user.name);
+      return () => stopSignaling();
+    }
+  }, [user?.id]);
+
   if (!loading && !user) return <Redirect href="/(auth)/login" />;
 
   return (
@@ -55,6 +65,15 @@ export default function AppLayout() {
           tabBarLabel: 'المواعيد',
           tabBarIcon: ({ color, size }) => <TabIcon name="calendar" color={color} size={size} />,
           headerTitle: 'مواعيد اليوم',
+        }}
+      />
+      <Tabs.Screen
+        name="system"
+        options={{
+          title: 'النظام',
+          tabBarLabel: 'النظام',
+          tabBarIcon: ({ color, size }) => <TabIcon name="grid" color={color} size={size} />,
+          headerShown: false,
         }}
       />
     </Tabs>
