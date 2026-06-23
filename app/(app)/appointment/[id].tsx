@@ -58,14 +58,8 @@ export default function AppointmentDetail() {
 
   const updateStatus = useCallback(async (next: AppointmentStatus) => {
     if (!appt) return;
-    // Only field_appointments (id starts with "f-") support status update
-    const rawId = String(appt.id).replace('f-', '');
-    if (!String(appt.id).startsWith('f-')) {
-      Alert.alert('تنبيه', 'يمكن تغيير حالة مواعيد الميدان فقط من التطبيق');
-      return;
-    }
     try {
-      await api.patch(`/mobile/appointments/${rawId}`, { status: next });
+      await api.patch(`/mobile/appointments/${appt.id}`, { status: next });
       setAppt(prev => prev ? { ...prev, status: next } : prev);
     } catch {
       Alert.alert('خطأ', 'تعذّر تحديث الحالة');
@@ -254,7 +248,7 @@ export default function AppointmentDetail() {
         )}
 
         {/* Status Actions */}
-        {(appt.status === 'pending' || appt.status === 'in_progress') && String(appt.id).startsWith('f-') && (
+        {(appt.status === 'pending' || appt.status === 'in_progress') && (
           <View style={s.actionsRow}>
             {appt.status === 'pending' && (
               <TouchableOpacity style={s.btnStart} onPress={() => confirmStatus('in_progress', 'بدء الموعد')}>
