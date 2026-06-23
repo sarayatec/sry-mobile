@@ -33,11 +33,33 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Build APK (release — JS bundled automatically by Expo Gradle plugin)
+      - name: Bundle JS into assets
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx expo export:embed \
+            --platform android \
+            --output-dir android/app/src/main/assets \
+            --dev false
+
+      - name: Verify bundle exists
+        run: |
+          BUNDLE=android/app/src/main/assets/index.android.bundle
+          if [ ! -f "$BUNDLE" ]; then echo "ERROR: bundle missing!" && exit 1; fi
+          echo "Bundle size: $(du -sh $BUNDLE)"
+
+      - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          ./gradlew assembleRelease -x createBundleReleaseJsAndAssets --no-daemon
+
+      - name: Verify APK contains bundle
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if ! unzip -l "$APK" | grep -q "index.android.bundle"; then
+            echo "ERROR: bundle not in APK!" && exit 1
+          fi
+          echo "Bundle confirmed inside APK ✓"
 
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
