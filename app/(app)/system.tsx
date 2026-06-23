@@ -6,10 +6,27 @@ import * as SecureStore from 'expo-secure-store';
 
 const SRY_URL = 'https://sry.sarayatec.com';
 
+// Build the JS that seeds localStorage BEFORE React reads it on the web side.
+// Runs via injectedJavaScriptBeforeContentLoaded so it executes before any
+// page script — the web AuthContext useState initializer will find the token.
+function buildPreloadScript(token: string, userRaw: string | null): string {
+  return `
+    (function() {
+      try {
+        localStorage.setItem('token', ${JSON.stringify(token)});
+        ${userRaw ? `localStorage.setItem('currentUser', ${JSON.stringify(userRaw)});` : ''}
+        localStorage.setItem('isFieldApp', '1');
+      } catch(e) {}
+    })();
+    true;
+  `;
+}
+
 export default function SystemScreen() {
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
-  const [injectJs, setInjectJs] = useState('');
+  // null = still reading token, string = ready (may be empty if no token)
+  const [preloadScript, setPreloadScript] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -18,20 +35,22 @@ export default function SystemScreen() {
       SecureStore.getItemAsync('auth_user'),
     ]).then(([token, userRaw]) => {
       if (token) {
-        // Inject token into localStorage — no reload needed, React reads it on mount
-        const js = `
-          (function() {
-            if (!localStorage.getItem('token')) {
-              localStorage.setItem('token', ${JSON.stringify(token)});
-              ${userRaw ? `localStorage.setItem('currentUser', ${JSON.stringify(userRaw)});` : ''}
-            }
-          })();
-          true;
-        `;
-        setInjectJs(js);
+        setPreloadScript(buildPreloadScript(token, userRaw));
+      } else {
+        setPreloadScript(''); // no token — load page as-is (will show login)
       }
     });
   }, []);
+
+  // Don't render WebView until we have the token — prevents a race where the
+  // page loads before the script is ready
+  if (preloadScript === null) {
+    return (
+      <View style={[styles.container, { paddingTop: insets.top }, styles.center]}>
+        <ActivityIndicator size="large" color="#1e40af" />
+      </View>
+    );
+  }
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -46,7 +65,8 @@ export default function SystemScreen() {
         style={styles.web}
         onLoadStart={() => setLoading(true)}
         onLoadEnd={() => setLoading(false)}
-        injectedJavaScript={injectJs || undefined}
+        // Runs BEFORE page scripts — AuthContext useState will find the token
+        injectedJavaScriptBeforeContentLoaded={preloadScript || undefined}
         javaScriptEnabled
         domStorageEnabled
         allowsBackForwardNavigationGestures
@@ -60,6 +80,7 @@ export default function SystemScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f172a' },
+  center: { alignItems: 'center', justifyContent: 'center' },
   web: { flex: 1 },
   loader: {
     position: 'absolute', inset: 0, zIndex: 10,
