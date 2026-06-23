@@ -38,7 +38,8 @@ jobs:
           mkdir -p android/app/src/main/assets
           npx expo export:embed \
             --platform android \
-            --output-dir android/app/src/main/assets \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res \
             --dev false
 
       - name: Verify bundle exists
