@@ -39,19 +39,22 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
 
-      - name: Verify APK contains bundle
+      - name: Find and verify APK
         run: |
-          APK=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
+          echo "Found APK: $APK"
+          if [ -z "$APK" ]; then echo "ERROR: no APK found!" && exit 1; fi
           if ! unzip -l "$APK" | grep -q "index.android.bundle"; then
             echo "ERROR: bundle not in APK!" && exit 1
           fi
           echo "Bundle confirmed inside APK ✓"
+          echo "APK_PATH=$APK" >> $GITHUB_ENV
 
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: sry-field-apk
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          path: ${{ env.APK_PATH }}
           retention-days: 30
 
       - name: Upload APK to server
@@ -63,7 +66,7 @@ jobs:
           chmod 600 /tmp/deploy_key
           scp -i /tmp/deploy_key \
             -o StrictHostKeyChecking=no \
-            android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            "$APK_PATH" \
             root@152.42.210.72:/var/www/html/app/sry-field.apk
           rm /tmp/deploy_key
 
