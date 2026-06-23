@@ -33,17 +33,7 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Bundle JS (standalone — no Metro needed)
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx react-native bundle \
-            --platform android \
-            --dev false \
-            --entry-file node_modules/expo-router/entry.js \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res
-
-      - name: Build APK
+      - name: Build APK (release — JS bundled automatically by Expo Gradle plugin)
         run: |
           cd android
           chmod +x gradlew
