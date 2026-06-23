@@ -33,17 +33,27 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Build Debug APK
+      - name: Bundle JS (standalone — no Metro needed)
+        run: |
+          mkdir -p android/app/src/main/assets
+          npx react-native bundle \
+            --platform android \
+            --dev false \
+            --entry-file node_modules/expo-router/entry.js \
+            --bundle-output android/app/src/main/assets/index.android.bundle \
+            --assets-dest android/app/src/main/res
+
+      - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: sry-field-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
           retention-days: 30
 
       - name: Upload APK to server
@@ -55,9 +65,9 @@ jobs:
           chmod 600 /tmp/deploy_key
           scp -i /tmp/deploy_key \
             -o StrictHostKeyChecking=no \
-            android/app/build/outputs/apk/debug/app-debug.apk \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk \
             root@152.42.210.72:/var/www/html/app/sry-field.apk
           rm /tmp/deploy_key
 
       - name: Done
-        run: echo "APK available as artifact and deployed to https://sry.sarayatec.com/app/sry-field.apk"
+        run: echo "APK deployed to https://sry.sarayatec.com/app/sry-field.apk"
