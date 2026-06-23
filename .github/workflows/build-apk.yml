@@ -33,26 +33,11 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
-      - name: Bundle JS into assets
-        run: |
-          mkdir -p android/app/src/main/assets
-          npx expo export:embed \
-            --platform android \
-            --bundle-output android/app/src/main/assets/index.android.bundle \
-            --assets-dest android/app/src/main/res \
-            --dev false
-
-      - name: Verify bundle exists
-        run: |
-          BUNDLE=android/app/src/main/assets/index.android.bundle
-          if [ ! -f "$BUNDLE" ]; then echo "ERROR: bundle missing!" && exit 1; fi
-          echo "Bundle size: $(du -sh $BUNDLE)"
-
       - name: Build APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease -x createBundleReleaseJsAndAssets --no-daemon
+          ./gradlew assembleRelease --no-daemon
 
       - name: Verify APK contains bundle
         run: |
