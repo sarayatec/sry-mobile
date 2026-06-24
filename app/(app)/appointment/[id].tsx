@@ -39,13 +39,22 @@ export default function AppointmentDetail() {
 
   const loadExtras = async (a: FieldAppointment) => {
     try {
-      // Get current location
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status === 'granted') {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-        setMyLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+        // Use last known position first (instant), fall back to current with 5s timeout
+        const last = await Location.getLastKnownPositionAsync({});
+        if (last) {
+          setMyLocation({ lat: last.coords.latitude, lng: last.coords.longitude });
+        } else {
+          const loc = await Promise.race([
+            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+          ]) as Location.LocationObject;
+          setMyLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
+        }
       }
-      // Get property location from code
+    } catch {}
+    try {
       if (a.property_code) {
         const { data: prop } = await api.get<PropertyLocation>(
           `/mobile/property-location/${encodeURIComponent(a.property_code)}`

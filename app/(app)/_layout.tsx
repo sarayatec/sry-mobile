@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { TouchableOpacity, Alert } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
@@ -11,7 +12,7 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 }
 
 export default function AppLayout() {
-  const { user, loading } = useAuthStore();
+  const { user, loading, logout } = useAuthStore();
 
   useEffect(() => {
     if (user) {
@@ -21,6 +22,18 @@ export default function AppLayout() {
   }, [user?.id]);
 
   if (!loading && !user) return <Redirect href="/(auth)/login" />;
+
+  const LogoutBtn = () => (
+    <TouchableOpacity
+      onPress={() => Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
+        { text: 'إلغاء', style: 'cancel' },
+        { text: 'خروج', style: 'destructive', onPress: logout },
+      ])}
+      style={{ paddingHorizontal: 14, paddingVertical: 6 }}
+    >
+      <Ionicons name="log-out-outline" size={24} color="#fff" />
+    </TouchableOpacity>
+  );
 
   return (
     <Tabs
@@ -38,6 +51,7 @@ export default function AppLayout() {
         headerTintColor: '#fff',
         headerTitleStyle: { fontWeight: 'bold', fontSize: 17 },
         headerTitleAlign: 'center',
+        headerLeft: () => <LogoutBtn />,
       }}
     >
       <Tabs.Screen
@@ -51,12 +65,7 @@ export default function AppLayout() {
       />
       <Tabs.Screen
         name="map"
-        options={{
-          title: 'الخريطة',
-          tabBarLabel: 'الخريطة',
-          tabBarIcon: ({ color, size }) => <TabIcon name="map" color={color} size={size} />,
-          headerTitle: 'خريطة الموظفين',
-        }}
+        options={{ href: null }}
       />
       <Tabs.Screen
         name="appointments"
