@@ -26,7 +26,6 @@ let currentFacingMode: 'environment' | 'user' = 'environment';
 let appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
 let bgNotifId: string | null = null;
 
-// Show an ongoing notification so Android keeps the process alive (camera continues in background)
 async function showBackgroundNotif() {
   if (bgNotifId) return;
   try {
@@ -53,13 +52,14 @@ async function hideBackgroundNotif() {
 async function onAppStateChange(state: AppStateStatus) {
   if (state === 'background' || state === 'inactive') {
     if (Object.keys(peerConns).length > 0) {
-      // Active call: keep camera alive via foreground notification + PiP
+      // Active call: camera service is already running (started in handleOffer).
+      // Show notification as an extra keep-alive. Try PiP for screen-on cases
+      // (screen-off PiP will fail silently — camera service handles that).
       await showBackgroundNotif();
       if (Platform.OS === 'android') {
         setTimeout(() => enterPiP(), 150);
       }
     } else {
-      // No active call: release camera so the green indicator disappears
       releaseStream();
     }
   } else if (state === 'active') {
@@ -82,7 +82,6 @@ export function startSignaling(employeeId: string, name: string) {
     socket!.emit('employee:register', { employeeId, name });
   });
 
-  // stream:start: no pre-warm — cached warm stream causes black frames on Android
   socket.on('stream:start', () => { /* intentionally empty */ });
 
   socket.on('stream:stop', ({ adminSocketId }: { adminSocketId?: string }) => {
@@ -97,7 +96,6 @@ export function startSignaling(employeeId: string, name: string) {
     switchCamera(facingMode);
   });
 
-  // Single code path for creating peer connections
   socket.on('webrtc:offer', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
     await handleOffer(from, offer);
   });
@@ -122,7 +120,6 @@ export function stopSignaling() {
   releaseStream();
 }
 
-// Singleton: prevents double getUserMedia calls
 function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): Promise<MediaStream> {
   if (localStream && facingMode === currentFacingMode) return Promise.resolve(localStream);
   if (streamPromise && facingMode === currentFacingMode) return streamPromise;
@@ -152,10 +149,6 @@ function releaseStream() {
   streamPromise = null;
 }
 
-async function warmUpStream() {
-  try { await acquireStream(); } catch {}
-}
-
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
   try {
     if (peerConns[adminSocketId]) {
@@ -163,26 +156,36 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       delete peerConns[adminSocketId];
     }
 
-    // Release any cached warm-up stream — it may have been acquired before
-    // the camera hardware was ready (first frames are black on Android).
-    // Re-acquire fresh so the camera has time to produce real frames.
-    releaseStream();
-    // Small pause BEFORE getUserMedia so hardware pipeline initializes
-    await new Promise(r => setTimeout(r, 500));
+    // On Android: start camera foreground service BEFORE getUserMedia.
+    // Android 11+ requires a foreground service with FOREGROUND_SERVICE_TYPE_CAMERA
+    // to be running BEFORE the camera is opened, otherwise access is revoked when
+    // the app goes to background (screen off or switching apps).
+    if (Platform.OS === 'android') {
+      startCameraService();
+      setAutoEnterPiP(true);
+      await new Promise(r => setTimeout(r, 400)); // let service start before camera opens
+    }
+
+    // Reuse existing live stream — releasing a live stream causes a brief
+    // "second camera" indicator on Android and a black-frame gap.
+    const isStreamAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
+    if (!isStreamAlive) {
+      releaseStream();
+      await new Promise(r => setTimeout(r, 300)); // let hardware reset
+    }
+
     const stream = await acquireStream();
     if (!stream) { console.warn('[webrtc] acquireStream returned null'); return; }
-    // Additional wait for first real frames to arrive from camera sensor
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for first real frames only when stream was just (re)opened
+    if (!isStreamAlive) {
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
 
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-    // Start dedicated camera foreground service — keeps camera alive when screen off
-    if (Platform.OS === 'android') {
-      startCameraService();
-      setAutoEnterPiP(true);
-    }
 
     pc.addEventListener('icecandidate', (e: any) => {
       if (e.candidate) socket?.emit('webrtc:ice', { to: adminSocketId, candidate: e.candidate });
@@ -222,7 +225,6 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 function closePeer(adminSocketId: string) {
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
-  // Only release stream and hide notif when no more active peers
   if (Object.keys(peerConns).length === 0) {
     releaseStream();
     hideBackgroundNotif();
