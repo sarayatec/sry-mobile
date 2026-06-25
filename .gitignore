@@ -7,6 +7,10 @@ ios/
 !modules/**/android/
 !modules/**/android/src/
 !modules/**/android/src/**
+# Never track generated/local gradle files — Expo autolinking generates them.
+# A committed build.gradle using the non-existent 'expo-module' plugin breaks CI.
+modules/**/android/build.gradle
+modules/**/android/*.gradle
 *.jks
 *.p8
 *.p12
