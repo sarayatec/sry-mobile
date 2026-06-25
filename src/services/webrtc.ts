@@ -54,14 +54,12 @@ async function onAppStateChange(state: AppStateStatus) {
   if (state === 'background' || state === 'inactive') {
     if (Object.keys(peerConns).length > 0) {
       await showBackgroundNotif();
-      // Keep tracks enabled so frames keep flowing in the background
       localStream?.getTracks().forEach(t => { t.enabled = true; });
       if (Platform.OS === 'android') {
         setTimeout(() => enterPiP(), 150);
       }
-    } else {
-      releaseStream();
     }
+    // No releaseStream() — stream stays alive for next offer even with no peers.
   } else if (state === 'active') {
     hideBackgroundNotif();
     if (Platform.OS === 'android' && Object.keys(peerConns).length > 0) {
@@ -228,24 +226,24 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 function closePeer(adminSocketId: string) {
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
-  // Skip teardown if handleOffer is mid-reconnect (it will create a new peer imminently).
-  if (Object.keys(peerConns).length === 0 && !isReconnecting) {
-    releaseStream();
+  if (Object.keys(peerConns).length === 0) {
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
-      setStreaming(false);   // clears PiP flag; session service stays alive
+      setStreaming(false);
       setAutoEnterPiP(false);
     }
+    // Stream intentionally kept alive: admin may reconnect imminently.
+    // releaseStream() is only called in stopSignaling() on logout.
   }
 }
 
 function closeAllPeers() {
   Object.keys(peerConns).forEach(id => peerConns[id]?.close());
   peerConns = {};
-  releaseStream();
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
-    setStreaming(false);   // clears PiP flag; session service stays alive
+    setStreaming(false);
     setAutoEnterPiP(false);
   }
+  // Stream kept alive — released only on logout (stopSignaling).
 }
