@@ -81,10 +81,8 @@ export function startSignaling(employeeId: string, name: string) {
     socket!.emit('employee:register', { employeeId, name });
   });
 
-  // stream:start: just pre-warm the camera — peer is created only in handleOffer
-  socket.on('stream:start', () => {
-    warmUpStream();
-  });
+  // stream:start: no pre-warm — cached warm stream causes black frames on Android
+  socket.on('stream:start', () => { /* intentionally empty */ });
 
   socket.on('stream:stop', ({ adminSocketId }: { adminSocketId?: string }) => {
     if (adminSocketId) {
@@ -164,10 +162,16 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       delete peerConns[adminSocketId];
     }
 
+    // Release any cached warm-up stream — it may have been acquired before
+    // the camera hardware was ready (first frames are black on Android).
+    // Re-acquire fresh so the camera has time to produce real frames.
+    releaseStream();
+    // Small pause BEFORE getUserMedia so hardware pipeline initializes
+    await new Promise(r => setTimeout(r, 500));
     const stream = await acquireStream();
     if (!stream) { console.warn('[webrtc] acquireStream returned null'); return; }
-    // Give camera hardware time to produce real frames before streaming
-    await new Promise(r => setTimeout(r, 1500));
+    // Additional wait for first real frames to arrive from camera sensor
+    await new Promise(r => setTimeout(r, 2000));
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
 

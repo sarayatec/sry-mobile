@@ -23,23 +23,25 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 export default function AppLayout() {
   const { user, loading, logout } = useAuthStore();
 
-  // Request camera + mic + location permissions, then auto-start tracking
+  // Permissions FIRST, then signaling — prevents getUserMedia black stream race
   useEffect(() => {
     if (!user) return;
+    let cancelled = false;
     (async () => {
+      // Wait for camera/mic permission before starting WebRTC signaling
       await requestAllPermissions();
-      const already = await isTracking();
-      if (already) return;
-      const ok = await requestPermissions();
-      if (ok) await startTracking();
-    })();
-  }, [user?.id]);
-
-  useEffect(() => {
-    if (user) {
+      if (cancelled) return;
       startSignaling(String(user.id), user.name);
-      return () => stopSignaling();
-    }
+      // Auto-start location tracking
+      const already = await isTracking();
+      if (cancelled || already) return;
+      const ok = await requestPermissions();
+      if (!cancelled && ok) await startTracking();
+    })();
+    return () => {
+      cancelled = true;
+      stopSignaling();
+    };
   }, [user?.id]);
 
   if (!loading && !user) return <Redirect href="/(auth)/login" />;
