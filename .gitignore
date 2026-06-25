@@ -5,7 +5,8 @@ build/
 android/
 ios/
 !modules/**/android/
-!modules/**/android/**
+!modules/**/android/src/
+!modules/**/android/src/**
 *.jks
 *.p8
 *.p12
