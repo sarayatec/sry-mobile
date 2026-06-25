@@ -59,11 +59,19 @@ async function onAppStateChange(state: AppStateStatus) {
   } else if (state === 'active') {
     hideBackgroundNotif();
     if (Platform.OS === 'android' && streamNeedsRefresh && Object.keys(peerConns).length > 0) {
-      // Returned from background — close stale connections so admin reconnects.
-      // Reconnect offer will arrive while we're in foreground where getUserMedia works.
       streamNeedsRefresh = false;
-      closeAllPeers();
-      socket?.emit('employee:stream-pausing'); // tell admin to reconnect immediately
+      // Re-enable tracks in case react-native-webrtc disabled them on pause
+      localStream?.getTracks().forEach(t => { t.enabled = true; });
+      const isAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
+      if (isAlive) {
+        // PiP was working — stream is still live, no need to reconnect
+        // Nothing to do, stream continues seamlessly
+      } else {
+        // Stream died in background — close peers and ask admin to reconnect
+        // Offer will arrive while we're in foreground so getUserMedia will work
+        closeAllPeers();
+        socket?.emit('employee:stream-pausing');
+      }
     }
   }
 }
@@ -95,6 +103,10 @@ export function startSignaling(employeeId: string, name: string) {
   });
 
   socket.on('webrtc:offer', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+    // If we're in background (streamNeedsRefresh), ignore the offer.
+    // Accepting offers in background breaks the existing PiP stream or fails
+    // getUserMedia. We reconnect as soon as employee returns to foreground.
+    if (streamNeedsRefresh) return;
     await handleOffer(from, offer);
   });
 
