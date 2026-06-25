@@ -34,7 +34,7 @@ const withPipActivity = (config) => {
           .setAspectRatio(Rational(16, 9))
           .build()
         enterPictureInPictureMode(params)
-      } catch (_: Exception) {}
+      } catch (e: Exception) {}
     }
   }
 `;
