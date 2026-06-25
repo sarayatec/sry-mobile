@@ -67,6 +67,9 @@ async function onAppStateChange(state: AppStateStatus) {
     if (Platform.OS === 'android' && Object.keys(peerConns).length > 0) {
       // Re-enable tracks in case Android disabled them; do NOT close the peer.
       localStream?.getTracks().forEach(t => { t.enabled = true; });
+    } else if (Platform.OS === 'android' && Object.keys(peerConns).length === 0 && socket?.connected) {
+      // Returned to foreground with no active stream — ask admin to re-offer.
+      socket.emit('employee:ready-for-stream');
     }
   }
 }
