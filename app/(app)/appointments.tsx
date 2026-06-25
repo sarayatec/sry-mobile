@@ -68,7 +68,7 @@ export default function AppointmentsScreen() {
     const dateStr = dt.toLocaleDateString('ar-OM', { weekday: 'short', day: 'numeric', month: 'short' });
 
     const openDetail = () =>
-      router.push({ pathname: '/(app)/appointment/[id]', params: { id: String(item.id), data: JSON.stringify(item) } });
+      router.push({ pathname: '/(app)/appointment/[id]', params: { id: String(item.id) } });
 
     return (
       <TouchableOpacity style={s.card} onPress={openDetail} activeOpacity={0.85}>

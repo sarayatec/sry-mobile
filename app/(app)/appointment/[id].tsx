@@ -5,11 +5,9 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
-import * as Location from 'expo-location';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import api from '../../../src/services/api';
-import { FieldAppointment, AppointmentStatus, PropertyLocation } from '../../../src/types';
+import { FieldAppointment, AppointmentStatus } from '../../../src/types';
 
 const STATUS_MAP: Record<AppointmentStatus, { label: string; fg: string; bg: string }> = {
   pending:     { label: 'قيد الانتظار', fg: '#92400e', bg: '#fef3c7' },
@@ -19,51 +17,29 @@ const STATUS_MAP: Record<AppointmentStatus, { label: string; fg: string; bg: str
 };
 
 export default function AppointmentDetail() {
-  const { data } = useLocalSearchParams<{ data: string }>();
+  const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
   const [appt, setAppt] = useState<FieldAppointment | null>(null);
-  const [property, setProperty] = useState<PropertyLocation | null>(null);
-  const [myLocation, setMyLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  useEffect(() => {
-    if (!data) return;
+  const load = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    setError('');
     try {
-      const parsed: FieldAppointment = JSON.parse(data);
-      setAppt(parsed);
-      loadExtras(parsed);
-    } catch {}
-  }, []);
+      const { data } = await api.get<FieldAppointment>(`/mobile/appointments/${id}`);
+      setAppt(data);
+    } catch (e: any) {
+      setError('تعذّر تحميل بيانات الموعد');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
 
-  const loadExtras = async (a: FieldAppointment) => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status === 'granted') {
-        // Use last known position first (instant), fall back to current with 5s timeout
-        const last = await Location.getLastKnownPositionAsync({});
-        if (last) {
-          setMyLocation({ lat: last.coords.latitude, lng: last.coords.longitude });
-        } else {
-          const loc = await Promise.race([
-            Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-          ]) as Location.LocationObject;
-          setMyLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
-        }
-      }
-    } catch {}
-    try {
-      if (a.property_code) {
-        const { data: prop } = await api.get<PropertyLocation>(
-          `/mobile/property-location/${encodeURIComponent(a.property_code)}`
-        );
-        setProperty(prop);
-      }
-    } catch {}
-    setLoading(false);
-  };
+  useEffect(() => { load(); }, [load]);
 
   const updateStatus = useCallback(async (next: AppointmentStatus) => {
     if (!appt) return;
@@ -83,8 +59,8 @@ export default function AppointmentDetail() {
   };
 
   const openNavigation = () => {
-    const lat = property?.lat ?? appt?.lat;
-    const lng = property?.lng ?? appt?.lng;
+    const lat = appt?.lat;
+    const lng = appt?.lng;
     if (!lat || !lng) {
       Alert.alert('تنبيه', 'لا يوجد إحداثيات لهذا العقار');
       return;
@@ -99,13 +75,20 @@ export default function AppointmentDetail() {
     }
   };
 
-  const callCustomer = (phone: string) => {
-    Linking.openURL(`tel:${phone}`);
-  };
-
-  if (!appt) return (
+  if (loading) return (
     <View style={s.center}>
       <ActivityIndicator size="large" color="#1e40af" />
+      <Text style={{ color: '#9ca3af', marginTop: 12, fontSize: 14 }}>جاري تحميل الموعد...</Text>
+    </View>
+  );
+
+  if (error || !appt) return (
+    <View style={s.center}>
+      <Ionicons name="alert-circle-outline" size={48} color="#ef4444" />
+      <Text style={{ color: '#ef4444', marginTop: 12, fontSize: 15, fontWeight: '700' }}>{error || 'الموعد غير موجود'}</Text>
+      <TouchableOpacity style={s.retryBtn} onPress={load}>
+        <Text style={{ color: '#fff', fontWeight: '700' }}>إعادة المحاولة</Text>
+      </TouchableOpacity>
     </View>
   );
 
@@ -113,21 +96,7 @@ export default function AppointmentDetail() {
   const dt = new Date(appt.scheduled_at);
   const timeStr = dt.toLocaleTimeString('ar-OM', { hour: '2-digit', minute: '2-digit' });
   const dateStr = dt.toLocaleDateString('ar-OM', { weekday: 'long', day: 'numeric', month: 'long' });
-
-  const propLat = property?.lat ?? appt.lat;
-  const propLng = property?.lng ?? appt.lng;
-  const hasMap = !!(propLat && propLng);
-
-  const mapRegion = hasMap ? {
-    latitude: myLocation ? (myLocation.lat + propLat!) / 2 : propLat!,
-    longitude: myLocation ? (myLocation.lng + propLng!) / 2 : propLng!,
-    latitudeDelta: myLocation
-      ? Math.abs(myLocation.lat - propLat!) * 2.5 + 0.01
-      : 0.02,
-    longitudeDelta: myLocation
-      ? Math.abs(myLocation.lng - propLng!) * 2.5 + 0.01
-      : 0.02,
-  } : undefined;
+  const hasCoords = !!(appt.lat && appt.lng);
 
   return (
     <View style={[s.root, { paddingTop: insets.top }]}>
@@ -156,6 +125,14 @@ export default function AppointmentDetail() {
           </View>
         </View>
 
+        {/* Navigation button — big & prominent */}
+        {hasCoords && (
+          <TouchableOpacity style={s.navBtn} onPress={openNavigation} activeOpacity={0.85}>
+            <Ionicons name="navigate" size={24} color="#fff" />
+            <Text style={s.navBtnText}>ابدأ الملاحة إلى الموقع</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Customer Info */}
         {(appt.customer_name || appt.customer_phone) && (
           <View style={s.card}>
@@ -167,7 +144,7 @@ export default function AppointmentDetail() {
               </View>
             )}
             {appt.customer_phone && (
-              <TouchableOpacity style={s.callBtn} onPress={() => callCustomer(appt.customer_phone!)}>
+              <TouchableOpacity style={s.callBtn} onPress={() => Linking.openURL(`tel:${appt.customer_phone}`)}>
                 <Ionicons name="call" size={18} color="#fff" />
                 <Text style={s.callBtnText}>{appt.customer_phone}</Text>
               </TouchableOpacity>
@@ -176,7 +153,7 @@ export default function AppointmentDetail() {
         )}
 
         {/* Property Info */}
-        {property && (
+        {(appt.property_code || appt.address) && (
           <View style={s.card}>
             <Text style={s.cardTitle}>بيانات العقار</Text>
             {appt.property_code && (
@@ -185,22 +162,10 @@ export default function AppointmentDetail() {
                 <Text style={s.rowText}>كود: {appt.property_code}</Text>
               </View>
             )}
-            {property.title && (
-              <View style={s.row}>
-                <Ionicons name="document-text-outline" size={16} color="#6b7280" />
-                <Text style={s.rowText} numberOfLines={2}>{property.title}</Text>
-              </View>
-            )}
-            {property.location && (
+            {appt.address && (
               <View style={s.row}>
                 <Ionicons name="location-outline" size={16} color="#6b7280" />
-                <Text style={s.rowText}>{property.location}</Text>
-              </View>
-            )}
-            {property.property_subtype && (
-              <View style={s.row}>
-                <Ionicons name="grid-outline" size={16} color="#6b7280" />
-                <Text style={s.rowText}>{property.property_subtype}</Text>
+                <Text style={s.rowText}>{appt.address}</Text>
               </View>
             )}
           </View>
@@ -214,44 +179,10 @@ export default function AppointmentDetail() {
           </View>
         )}
 
-        {/* Map */}
-        {loading ? (
-          <View style={[s.card, s.center, { height: 200 }]}>
-            <ActivityIndicator color="#1e40af" />
-            <Text style={{ color: '#9ca3af', marginTop: 8, fontSize: 13 }}>جاري تحميل الخريطة...</Text>
-          </View>
-        ) : hasMap ? (
-          <View style={s.mapCard}>
-            <Text style={s.cardTitle}>الموقع</Text>
-            <MapView style={s.map} initialRegion={mapRegion} provider={PROVIDER_GOOGLE}>
-              {/* Property marker */}
-              <Marker coordinate={{ latitude: propLat!, longitude: propLng! }}
-                title={appt.title} description={property?.location ?? appt.address}
-                pinColor="#ef4444" />
-              {/* My location marker */}
-              {myLocation && (
-                <Marker coordinate={{ latitude: myLocation.lat, longitude: myLocation.lng }}
-                  title="موقعي الحالي" pinColor="#3b82f6" />
-              )}
-              {/* Line between */}
-              {myLocation && (
-                <Polyline
-                  coordinates={[
-                    { latitude: myLocation.lat, longitude: myLocation.lng },
-                    { latitude: propLat!, longitude: propLng! },
-                  ]}
-                  strokeColor="#3b82f6" strokeWidth={2} lineDashPattern={[8, 4]}
-                />
-              )}
-            </MapView>
-            <TouchableOpacity style={s.navBtn} onPress={openNavigation}>
-              <Ionicons name="navigate" size={18} color="#fff" />
-              <Text style={s.navBtnText}>ابدأ الملاحة</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={[s.card, { alignItems: 'center', paddingVertical: 24 }]}>
-            <Ionicons name="map-outline" size={36} color="#d1d5db" />
+        {/* No coords notice */}
+        {!hasCoords && (
+          <View style={[s.card, { alignItems: 'center', paddingVertical: 20 }]}>
+            <Ionicons name="map-outline" size={32} color="#d1d5db" />
             <Text style={{ color: '#9ca3af', marginTop: 8, fontSize: 13 }}>لا يوجد موقع لهذا العقار</Text>
           </View>
         )}
@@ -284,7 +215,7 @@ export default function AppointmentDetail() {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f8fafc' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   header: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: '#fff', paddingHorizontal: 16, paddingVertical: 14,
@@ -306,13 +237,6 @@ const s = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
   },
-  mapCard: {
-    backgroundColor: '#fff', marginHorizontal: 16, marginTop: 12,
-    borderRadius: 16, overflow: 'hidden',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05, shadowRadius: 4, elevation: 1,
-    padding: 16, gap: 12,
-  },
   cardTitle: { fontSize: 13, fontWeight: '700', color: '#374151', textAlign: 'right', marginBottom: 2 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8, justifyContent: 'flex-end' },
   rowText: { fontSize: 14, color: '#374151', textAlign: 'right', flex: 1 },
@@ -322,15 +246,19 @@ const s = StyleSheet.create({
     backgroundColor: '#16a34a', borderRadius: 12, padding: 12, marginTop: 4,
   },
   callBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  map: { width: '100%', height: 220, borderRadius: 12 },
   navBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: '#2563eb', borderRadius: 12, padding: 13,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    backgroundColor: '#2563eb', borderRadius: 16, padding: 16,
+    marginHorizontal: 16, marginTop: 14,
+    shadowColor: '#2563eb', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 5,
   },
-  navBtnText: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  actionsRow: {
-    flexDirection: 'row', gap: 10, marginHorizontal: 16, marginTop: 16,
+  navBtnText: { color: '#fff', fontWeight: '900', fontSize: 17 },
+  retryBtn: {
+    marginTop: 16, backgroundColor: '#1e40af', borderRadius: 12,
+    paddingHorizontal: 24, paddingVertical: 12,
   },
+  actionsRow: { flexDirection: 'row', gap: 10, marginHorizontal: 16, marginTop: 16 },
   btnStart: {
     flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 6, backgroundColor: '#2563eb', borderRadius: 12, padding: 14,
