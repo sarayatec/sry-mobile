@@ -26,14 +26,26 @@ const withWebRTC = (config) => {
       }
     });
 
-    // 2. Enable Picture-in-Picture on the main activity
+    // 2. Enable Picture-in-Picture on the MAIN activity (find by name, not [0])
     const app = manifest.application[0];
-    const activity = app.activity?.[0];
-    if (activity) {
-      activity.$['android:supportsPictureInPicture'] = 'true';
-      activity.$['android:configChanges'] =
-        'screenSize|smallestScreenSize|screenLayout|orientation|keyboard|keyboardHidden|navigation';
+    const activities = app.activity || [];
+    const mainActivity = activities.find((a) => {
+      const n = a.$?.['android:name'] || '';
+      return n.includes('MainActivity') || n === '.MainActivity';
+    }) || activities[0];
+    if (mainActivity) {
+      mainActivity.$['android:supportsPictureInPicture'] = 'true';
+      // PiP requires the activity to be resizeable — if this is false the app
+      // won't even appear in the system Picture-in-picture list.
+      mainActivity.$['android:resizeableActivity'] = 'true';
+      // Merge required configChanges (don't drop ones Expo already set)
+      const needed = ['screenSize', 'smallestScreenSize', 'screenLayout', 'orientation', 'keyboard', 'keyboardHidden', 'navigation', 'uiMode'];
+      const current = (mainActivity.$['android:configChanges'] || '').split('|').filter(Boolean);
+      mainActivity.$['android:configChanges'] = Array.from(new Set([...current, ...needed])).join('|');
     }
+    // Also allow PiP at the application level (some OEMs read it here)
+    app.$ = app.$ || {};
+    app.$['android:resizeableActivity'] = 'true';
 
     app.service = app.service || [];
 
