@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, StyleSheet } from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, ActivityIndicator, RefreshControl, Alert, Linking, Platform, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import api from '../../src/services/api';
 import { FieldAppointment, AppointmentStatus } from '../../src/types';
 
@@ -20,8 +19,21 @@ const TABS: { key: Tab; label: string }[] = [
   { key: 'all',      label: 'الكل' },
 ];
 
+function openNavigation(item: FieldAppointment) {
+  if (!item.lat || !item.lng) {
+    Alert.alert('تنبيه', 'لا يوجد إحداثيات لهذا الموعد');
+    return;
+  }
+  const label = encodeURIComponent(item.title ?? 'الموعد');
+  if (Platform.OS === 'android') {
+    Linking.openURL(`google.navigation:q=${item.lat},${item.lng}&label=${label}`)
+      .catch(() => Linking.openURL(`https://maps.google.com/maps?daddr=${item.lat},${item.lng}`));
+  } else {
+    Linking.openURL(`maps://?daddr=${item.lat},${item.lng}`);
+  }
+}
+
 export default function AppointmentsScreen() {
-  const router = useRouter();
   const [allList, setAllList] = useState<FieldAppointment[]>([]);
   const [loading, setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -29,7 +41,6 @@ export default function AppointmentsScreen() {
 
   const load = useCallback(async () => {
     try {
-      // جلب جميع المواعيد — الـ API يُرجع فقط مواعيد الموظف المسجّل دخوله
       const { data } = await api.get<FieldAppointment[]>('/mobile/appointments');
       setAllList(Array.isArray(data) ? data : []);
     } catch {}
@@ -39,13 +50,12 @@ export default function AppointmentsScreen() {
   useEffect(() => { load(); }, [load]);
   const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
-  // فلترة حسب التبويب
   const todayStr = new Date().toISOString().slice(0, 10);
   const list = allList.filter(a => {
     const dateStr = new Date(a.scheduled_at).toISOString().slice(0, 10);
     if (tab === 'today')    return dateStr === todayStr;
     if (tab === 'upcoming') return dateStr > todayStr && a.status !== 'cancelled';
-    return true; // all
+    return true;
   });
 
   const updateStatus = async (id: number, status: AppointmentStatus) => {
@@ -66,12 +76,10 @@ export default function AppointmentsScreen() {
     const dt = new Date(item.scheduled_at);
     const timeStr = dt.toLocaleTimeString('ar-OM', { hour: '2-digit', minute: '2-digit' });
     const dateStr = dt.toLocaleDateString('ar-OM', { weekday: 'short', day: 'numeric', month: 'short' });
-
-    const openDetail = () =>
-      router.push({ pathname: '/(app)/appointment/[id]', params: { id: String(item.id) } });
+    const hasCoords = !!(item.lat && item.lng);
 
     return (
-      <TouchableOpacity style={s.card} onPress={openDetail} activeOpacity={0.85}>
+      <View style={s.card}>
         <View style={s.cardTop}>
           <View style={[s.badge, { backgroundColor: st.bg }]}>
             <Text style={[s.badgeText, { color: st.fg }]}>{st.label}</Text>
@@ -96,6 +104,14 @@ export default function AppointmentsScreen() {
         )}
         {item.description && <Text style={s.desc} numberOfLines={2}>{item.description}</Text>}
 
+        {/* Navigation button */}
+        {hasCoords && (
+          <TouchableOpacity style={s.navBtn} onPress={() => openNavigation(item)} activeOpacity={0.85}>
+            <Ionicons name="navigate" size={16} color="#fff" />
+            <Text style={s.navBtnText}>ابدأ الملاحة</Text>
+          </TouchableOpacity>
+        )}
+
         <View style={s.footer}>
           <View style={{ flexDirection: 'row', gap: 8 }}>
             {item.status === 'pending' && (
@@ -119,7 +135,7 @@ export default function AppointmentsScreen() {
             <Text style={s.date}>{dateStr}</Text>
           </View>
         </View>
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -127,7 +143,6 @@ export default function AppointmentsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
-      {/* تبويبات */}
       <View style={s.tabs}>
         {TABS.map(t => (
           <TouchableOpacity key={t.key} onPress={() => setTab(t.key)}
@@ -177,6 +192,11 @@ const s = StyleSheet.create({
   infoRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 4, gap: 4 },
   infoText: { color: '#6b7280', fontSize: 13, textAlign: 'right', flex: 1 },
   desc: { color: '#9ca3af', fontSize: 13, textAlign: 'right', marginBottom: 10, lineHeight: 20 },
+  navBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: '#2563eb', borderRadius: 12, paddingVertical: 10, marginBottom: 10,
+  },
+  navBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTopWidth: 1, borderTopColor: '#f3f4f6', marginTop: 4 },
   btnBlue:  { backgroundColor: '#dbeafe', borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8 },
   btnBlueText:  { color: '#1d4ed8', fontSize: 13, fontWeight: '700' },
