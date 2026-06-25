@@ -1,23 +1,24 @@
 package com.sarayatec.cameraservice
 
+import android.content.Context
 import android.content.Intent
 import android.os.Build
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
-class CameraServiceModule : Module() {
+private const val PREFS = "sry_streaming"
+private const val KEY   = "camera_active"
 
-  companion object {
-    // Read by MainActivity.onUserLeaveHint to decide whether to enter PiP
-    @JvmStatic var isStreaming: Boolean = false
-  }
+class CameraServiceModule : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("CameraService")
 
     Function("start") {
-      isStreaming = true
       val ctx = appContext.reactContext ?: return@Function
+      // Persist flag — read by MainActivity.onUserLeaveHint to enter PiP
+      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY, true).apply()
       val intent = Intent(ctx, CameraForegroundService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         ctx.startForegroundService(intent)
@@ -27,8 +28,9 @@ class CameraServiceModule : Module() {
     }
 
     Function("stop") {
-      isStreaming = false
       val ctx = appContext.reactContext ?: return@Function
+      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY, false).apply()
       ctx.stopService(Intent(ctx, CameraForegroundService::class.java))
     }
   }
