@@ -16,6 +16,7 @@ const withWebRTC = (config) => {
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.FOREGROUND_SERVICE_CAMERA',
       'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+      'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
       'android.permission.WAKE_LOCK',
     ];
     perms.forEach((name) => {
@@ -54,11 +55,13 @@ const withWebRTC = (config) => {
     // 4. Dedicated camera foreground service (keeps camera alive when screen off)
     const camSvcName = 'com.sarayatec.cameraservice.CameraForegroundService';
     const camSvc = app.service.find((s) => s.$?.['android:name'] === camSvcName);
-    if (!camSvc) {
+    if (camSvc) {
+      camSvc.$['android:foregroundServiceType'] = 'camera|microphone|dataSync';
+    } else {
       app.service.push({
         $: {
           'android:name': camSvcName,
-          'android:foregroundServiceType': 'camera|microphone',
+          'android:foregroundServiceType': 'camera|microphone|dataSync',
           'android:exported': 'false',
         },
       });

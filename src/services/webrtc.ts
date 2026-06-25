@@ -1,7 +1,7 @@
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { enterPiP, setAutoEnterPiP } from '../../modules/pip';
-import { startCameraService, stopCameraService } from '../../modules/camera-service';
+import { startSessionService, stopSessionService, setStreaming } from '../../modules/camera-service';
 import {
   mediaDevices,
   RTCPeerConnection,
@@ -71,6 +71,12 @@ async function onAppStateChange(state: AppStateStatus) {
 export function startSignaling(employeeId: string, name: string) {
   if (socket?.connected) return;
 
+  // Start a persistent foreground service for the WHOLE session so the OS
+  // (Samsung/Xiaomi) cannot kill the process when another app is opened or the
+  // screen turns off. Without this, the socket disconnects and the employee
+  // disappears from the admin dashboard.
+  if (Platform.OS === 'android') startSessionService();
+
   appStateSubscription = AppState.addEventListener('change', onAppStateChange);
 
   socket = io(SIGNAL_URL, {
@@ -114,6 +120,8 @@ export function stopSignaling() {
   socket?.disconnect();
   socket = null;
   releaseStream();
+  // Tear down the persistent session service on logout
+  if (Platform.OS === 'android') stopSessionService();
 }
 
 function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): Promise<MediaStream> {
@@ -148,10 +156,9 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       delete peerConns[adminSocketId];
     }
 
-    // Start camera foreground service BEFORE opening camera (Android 11+
-    // requires camera-type foreground service running before getUserMedia)
+    // Mark streaming (enables PiP) — session service already running from login
     if (Platform.OS === 'android') {
-      startCameraService();
+      setStreaming(true);
       setAutoEnterPiP(true);
       await new Promise(r => setTimeout(r, 400));
     }
@@ -214,7 +221,7 @@ function closePeer(adminSocketId: string) {
     releaseStream();
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
-      stopCameraService();
+      setStreaming(false);   // clears PiP flag; session service stays alive
       setAutoEnterPiP(false);
     }
   }
@@ -226,7 +233,7 @@ function closeAllPeers() {
   releaseStream();
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
-    stopCameraService();
+    setStreaming(false);   // clears PiP flag; session service stays alive
     setAutoEnterPiP(false);
   }
 }

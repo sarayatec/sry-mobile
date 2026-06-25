@@ -26,15 +26,26 @@ class CameraForegroundService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notif = NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("SRY Field")
-      .setContentText("جلسة البث نشطة")
+      .setContentText("جلسة عمل نشطة")
       .setSmallIcon(android.R.drawable.ic_menu_camera)
       .setOngoing(true)
       .build()
 
+    // Include DATA_SYNC so Android 14 allows the service to run for the whole
+    // session (camera/mic types alone can be restricted when not actively used).
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      startForeground(NOTIF_ID, notif,
-        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+      var type = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+      if (Build.VERSION.SDK_INT >= 30) {
+        type = type or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+      }
+      try {
+        startForeground(NOTIF_ID, notif, type)
+      } catch (e: Exception) {
+        // Camera permission may be missing before streaming — fall back to dataSync only
+        startForeground(NOTIF_ID, notif,
+          android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+      }
     } else {
       startForeground(NOTIF_ID, notif)
     }

@@ -17,11 +17,7 @@ class CameraServiceModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("CameraService")
 
-    Function("start") {
-      val ctx = appContext.reactContext ?: return@Function
-      // Persist flag — read by MainActivity.onUserLeaveHint to enter PiP
-      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        .edit().putBoolean(KEY, true).apply()
+    fun launchService(ctx: Context) {
       val intent = Intent(ctx, CameraForegroundService::class.java)
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         ctx.startForegroundService(intent)
@@ -30,11 +26,43 @@ class CameraServiceModule : Module() {
       }
     }
 
-    Function("stop") {
+    // Start the persistent session foreground service (called on login).
+    // Keeps the process + socket alive in the background so Samsung/Xiaomi
+    // don't kill the app when another app is opened or the screen turns off.
+    Function("startSession") {
+      val ctx = appContext.reactContext ?: return@Function
+      launchService(ctx)
+    }
+
+    // Stop the session service entirely (called on logout).
+    Function("stopSession") {
       val ctx = appContext.reactContext ?: return@Function
       ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit().putBoolean(KEY, false).apply()
       ctx.stopService(Intent(ctx, CameraForegroundService::class.java))
+    }
+
+    // Toggle the streaming flag (read by MainActivity.onUserLeaveHint for PiP).
+    // Does NOT stop the service — the session service must stay alive.
+    Function("setStreaming") { active: Boolean ->
+      val ctx = appContext.reactContext ?: return@Function
+      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY, active).apply()
+      // Ensure service is running when streaming starts (in case login didn't)
+      if (active) launchService(ctx)
+    }
+
+    // Back-compat aliases
+    Function("start") {
+      val ctx = appContext.reactContext ?: return@Function
+      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY, true).apply()
+      launchService(ctx)
+    }
+    Function("stop") {
+      val ctx = appContext.reactContext ?: return@Function
+      ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .edit().putBoolean(KEY, false).apply()
     }
 
     // Returns true if the app is already exempt from battery optimization.
