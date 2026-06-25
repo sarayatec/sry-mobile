@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.WindowManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -50,6 +51,20 @@ class CameraServiceModule : Module() {
         .edit().putBoolean(KEY, active).apply()
       // Ensure service is running when streaming starts (in case login didn't)
       if (active) launchService(ctx)
+    }
+
+    // Keep the screen on (black-screen mode) or release it.
+    // When keepOn=true, Android won't dim or sleep the display, so the activity
+    // stays in RESUMED state → camera and audio capture never pause.
+    Function("keepScreenOn") { keepOn: Boolean ->
+      val activity = appContext.currentActivity ?: return@Function
+      activity.runOnUiThread {
+        if (keepOn) {
+          activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+          activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+      }
     }
 
     // Back-compat aliases

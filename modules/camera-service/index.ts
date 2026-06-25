@@ -26,6 +26,12 @@ export function stopCameraService(): void {
   try { mod?.setStreaming(false); } catch {}
 }
 
+// Keep screen on (black-screen streaming mode) — activity stays RESUMED so
+// camera and audio never pause regardless of what the user does.
+export function keepScreenOn(active: boolean): void {
+  try { mod?.keepScreenOn(active); } catch {}
+}
+
 export function isBatteryOptimizationIgnored(): boolean {
   try { return !!mod?.isBatteryOptimizationIgnored(); } catch { return false; }
 }

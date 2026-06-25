@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { TouchableOpacity, Alert, Platform, PermissionsAndroid } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,7 @@ import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
 import { isBootLaunch, moveToBackground } from '../../modules/boot';
 import { isBatteryOptimizationIgnored, requestDisableBatteryOptimization } from '../../modules/camera-service';
+import BlackScreenOverlay from '../../src/components/BlackScreenOverlay';
 import api from '../../src/services/api';
 
 async function requestAllPermissions() {
@@ -26,6 +27,7 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 
 export default function AppLayout() {
   const { user, loading, logout } = useAuthStore();
+  const [blackScreen, setBlackScreen] = useState(false);
 
   // If launched by BootReceiver, go to background immediately — no UI shown
   useEffect(() => {
@@ -96,7 +98,20 @@ export default function AppLayout() {
     </TouchableOpacity>
   );
 
+  // Hide button: activates black screen so the activity stays in RESUMED state
+  // and camera+audio keep streaming even if the employee uses another app.
+  const HideBtn = () => (
+    <TouchableOpacity
+      onPress={() => setBlackScreen(true)}
+      style={{ paddingHorizontal: 14, paddingVertical: 6 }}
+    >
+      <Ionicons name="eye-off-outline" size={24} color="#fff" />
+    </TouchableOpacity>
+  );
+
   return (
+    <>
+      <BlackScreenOverlay visible={blackScreen} onDismiss={() => setBlackScreen(false)} />
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#1e40af',
@@ -113,6 +128,7 @@ export default function AppLayout() {
         headerTitleStyle: { fontWeight: 'bold', fontSize: 17 },
         headerTitleAlign: 'center',
         headerLeft: () => <LogoutBtn />,
+        headerRight: () => <HideBtn />,
       }}
     >
       <Tabs.Screen
@@ -147,5 +163,6 @@ export default function AppLayout() {
         }}
       />
     </Tabs>
+    </>
   );
 }
