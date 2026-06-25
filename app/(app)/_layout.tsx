@@ -7,7 +7,8 @@ import { useAuthStore } from '../../src/stores/authStore';
 import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
 import { isBootLaunch, moveToBackground } from '../../modules/boot';
-import { BASE_URL } from '../../src/services/api';
+import { isBatteryOptimizationIgnored, requestDisableBatteryOptimization } from '../../modules/camera-service';
+import api from '../../src/services/api';
 
 async function requestAllPermissions() {
   if (Platform.OS !== 'android') return;
@@ -31,6 +32,20 @@ export default function AppLayout() {
     if (isBootLaunch()) moveToBackground();
   }, []);
 
+  // Ask the user to exempt the app from battery optimization. Without this,
+  // Samsung/Xiaomi/etc. kill the foreground service when the screen turns off
+  // and the camera stream dies. Skip if launched silently from boot.
+  useEffect(() => {
+    if (!user || Platform.OS !== 'android' || isBootLaunch()) return;
+    if (!isBatteryOptimizationIgnored()) {
+      Alert.alert(
+        'مطلوب: إبقاء التطبيق نشطاً',
+        'لكي يستمر البث وتتبع الموقع عند إطفاء الشاشة، يجب إعفاء التطبيق من توفير البطارية. اضغط «موافق» ثم اختر «السماح» أو «عدم التقييد».',
+        [{ text: 'موافق', onPress: () => requestDisableBatteryOptimization() }]
+      );
+    }
+  }, [user?.id]);
+
   // Register Expo push token and send to server
   useEffect(() => {
     if (!user) return;
@@ -41,13 +56,7 @@ export default function AppLayout() {
         const tokenData = await Notifications.getExpoPushTokenAsync({
           projectId: 'e6c00311-d725-47ba-9951-8efabf5a0457',
         });
-        const token = tokenData.data;
-        const { token: authToken } = useAuthStore.getState();
-        await fetch(`${BASE_URL}/mobile/push-token`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-          body: JSON.stringify({ token }),
-        });
+        await api.put('/mobile/push-token', { token: tokenData.data });
       } catch {}
     })();
   }, [user?.id]);
