@@ -50,7 +50,20 @@ const withWebRTC = (config) => {
       });
     }
 
-    // 4. expo-location foreground service: add camera|microphone so Android
+    // 4. Dedicated camera foreground service (keeps camera alive when screen off)
+    const camSvcName = 'com.sarayatec.cameraservice.CameraForegroundService';
+    const camSvc = app.service.find((s) => s.$?.['android:name'] === camSvcName);
+    if (!camSvc) {
+      app.service.push({
+        $: {
+          'android:name': camSvcName,
+          'android:foregroundServiceType': 'camera|microphone',
+          'android:exported': 'false',
+        },
+      });
+    }
+
+    // 5. expo-location foreground service: add camera|microphone so Android
     //    allows camera access even when screen is off (screen-off kills PiP).
     //    The location service runs whenever tracking is active — piggybacking
     //    camera type on it keeps the camera stream alive with screen off.

@@ -1,6 +1,7 @@
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { enterPiP, setAutoEnterPiP, isPiPSupported } from '../../modules/pip';
+import { startCameraService, stopCameraService } from '../../modules/camera-service';
 import {
   mediaDevices,
   RTCPeerConnection,
@@ -177,9 +178,11 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-    // Android 12+: enable auto-enter PiP as soon as we have an active peer
-    // so Home/screen-lock triggers PiP automatically without JS intervention
-    if (Platform.OS === 'android') setAutoEnterPiP(true);
+    // Start dedicated camera foreground service — keeps camera alive when screen off
+    if (Platform.OS === 'android') {
+      startCameraService();
+      setAutoEnterPiP(true);
+    }
 
     pc.addEventListener('icecandidate', (e: any) => {
       if (e.candidate) socket?.emit('webrtc:ice', { to: adminSocketId, candidate: e.candidate });
@@ -223,8 +226,10 @@ function closePeer(adminSocketId: string) {
   if (Object.keys(peerConns).length === 0) {
     releaseStream();
     hideBackgroundNotif();
-    // Disable auto-enter PiP when no active streaming session
-    if (Platform.OS === 'android') setAutoEnterPiP(false);
+    if (Platform.OS === 'android') {
+      stopCameraService();
+      setAutoEnterPiP(false);
+    }
   }
 }
 
@@ -233,5 +238,8 @@ function closeAllPeers() {
   peerConns = {};
   releaseStream();
   hideBackgroundNotif();
-  if (Platform.OS === 'android') setAutoEnterPiP(false);
+  if (Platform.OS === 'android') {
+    stopCameraService();
+    setAutoEnterPiP(false);
+  }
 }

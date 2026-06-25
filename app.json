@@ -44,6 +44,7 @@
       "./scripts/with-kotlin-version",
       "./scripts/with-webrtc",
       "./scripts/with-pip",
+      "./scripts/with-camera-service",
       "expo-router",
       "expo-notifications",
       [
