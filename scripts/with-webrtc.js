@@ -16,6 +16,7 @@ const withWebRTC = (config) => {
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.FOREGROUND_SERVICE_CAMERA',
       'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+      'android.permission.WAKE_LOCK',
     ];
     perms.forEach((name) => {
       if (!existing.includes(name)) {

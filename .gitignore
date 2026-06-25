@@ -4,6 +4,8 @@ dist/
 build/
 android/
 ios/
+!modules/**/android/
+!modules/**/android/**
 *.jks
 *.p8
 *.p12
