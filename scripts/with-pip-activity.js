@@ -1,16 +1,15 @@
 const { withMainActivity } = require('@expo/config-plugins');
 
-// Patches MainActivity to enter PiP in onUserLeaveHint (fires BEFORE onPause,
-// the only window where enterPictureInPictureMode() is still allowed).
+// Patches MainActivity to enter PiP in onUserLeaveHint.
+// onUserLeaveHint fires BEFORE onPause — the only window where
+// enterPictureInPictureMode() is still allowed by Android.
+// AppState.onChange is already too late (Activity is paused).
 const withPipActivity = (config) => {
   return withMainActivity(config, (mod) => {
     let src = mod.modResults.contents;
 
-    if (src.includes('onUserLeaveHint')) return mod; // already patched
+    if (src.includes('onUserLeaveHint')) return mod;
 
-    // Imports — use fully-qualified names in the method body to avoid
-    // any import conflicts with generated code, except these two which
-    // are safe to add:
     ['import android.app.PictureInPictureParams', 'import android.util.Rational']
       .forEach((imp) => {
         if (!src.includes(imp)) {
@@ -18,8 +17,6 @@ const withPipActivity = (config) => {
         }
       });
 
-    // onUserLeaveHint: reads SharedPreferences to check if camera is streaming.
-    // No cross-module class reference needed — just android.* APIs.
     const method = [
       '',
       '  override fun onUserLeaveHint() {',
@@ -41,7 +38,6 @@ const withPipActivity = (config) => {
 
     const lastBrace = src.lastIndexOf('}');
     src = src.slice(0, lastBrace) + method + src.slice(lastBrace);
-
     mod.modResults.contents = src;
     return mod;
   });
