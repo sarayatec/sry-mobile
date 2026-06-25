@@ -25,6 +25,9 @@ let peerConns: Record<string, RTCPeerConnection> = {};
 let currentFacingMode: 'environment' | 'user' = 'environment';
 let appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
 let bgNotifId: string | null = null;
+// Guard: prevents releaseStream() during peer reconnect (handleOffer closes old peer
+// which fires connectionstatechange → closePeer before new peer is established).
+let isReconnecting = false;
 
 async function showBackgroundNotif() {
   if (bgNotifId) return;
@@ -152,6 +155,9 @@ function releaseStream() {
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
   try {
     if (peerConns[adminSocketId]) {
+      // Set guard BEFORE close() so the connectionstatechange event that fires
+      // synchronously inside close() does not call releaseStream() via closePeer.
+      isReconnecting = true;
       peerConns[adminSocketId].close();
       delete peerConns[adminSocketId];
     }
@@ -178,6 +184,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
+    isReconnecting = false; // new peer registered — safe to release stream again if needed
     stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
     pc.addEventListener('icecandidate', (e: any) => {
@@ -194,6 +201,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     await pc.setLocalDescription(answer);
     socket?.emit('webrtc:answer', { to: adminSocketId, answer });
   } catch (err) {
+    isReconnecting = false;
     console.error('[webrtc] handleOffer error:', err);
   }
 }
@@ -217,7 +225,8 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 function closePeer(adminSocketId: string) {
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
-  if (Object.keys(peerConns).length === 0) {
+  // Skip teardown if handleOffer is mid-reconnect (it will create a new peer imminently).
+  if (Object.keys(peerConns).length === 0 && !isReconnecting) {
     releaseStream();
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
