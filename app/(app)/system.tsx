@@ -73,7 +73,6 @@ export default function SystemScreen() {
         style={styles.web}
         onLoadStart={() => setLoading(true)}
         onLoadEnd={() => setLoading(false)}
-        // Runs BEFORE page scripts — AuthContext useState will find the token
         injectedJavaScriptBeforeContentLoaded={preloadScript || undefined}
         javaScriptEnabled
         domStorageEnabled
@@ -85,6 +84,13 @@ export default function SystemScreen() {
         mediaPlaybackRequiresUserAction={false}
         allowsProtectedMedia
         setSupportMultipleWindows={false}
+        // Grant camera/mic permissions when the web page requests them
+        onPermissionRequest={(request) => { request.grant(request.resources); }}
+        // Allow file access for image upload
+        allowFileAccess
+        allowFileAccessFromFileURLs
+        allowUniversalAccessFromFileURLs
+        mixedContentMode="always"
       />
     </View>
   );
