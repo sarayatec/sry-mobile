@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, Platform, PermissionsAndroid } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
@@ -30,6 +30,14 @@ export default function SystemScreen() {
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
+    // Request camera + microphone permissions so WebView can access them
+    if (Platform.OS === 'android') {
+      PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.CAMERA,
+        PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+      ]).catch(() => {});
+    }
+
     Promise.all([
       SecureStore.getItemAsync('auth_token'),
       SecureStore.getItemAsync('auth_user'),
@@ -37,7 +45,7 @@ export default function SystemScreen() {
       if (token) {
         setPreloadScript(buildPreloadScript(token, userRaw));
       } else {
-        setPreloadScript(''); // no token — load page as-is (will show login)
+        setPreloadScript('');
       }
     });
   }, []);
@@ -73,6 +81,10 @@ export default function SystemScreen() {
         cacheEnabled
         sharedCookiesEnabled
         startInLoadingState={false}
+        allowsInlineMediaPlayback
+        mediaPlaybackRequiresUserAction={false}
+        allowsProtectedMedia
+        setSupportMultipleWindows={false}
       />
     </View>
   );
