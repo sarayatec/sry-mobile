@@ -37,21 +37,16 @@ export default function DashboardScreen() {
   }, [refresh]);
 
   const handleToggle = async () => {
+    if (!tracking) return; // auto-starts on login — no manual start needed
     setToggling(true);
-    try {
-      if (tracking) {
-        Alert.alert('إيقاف الجلسة', 'سيتوقف إرسال موقعك. هل أنت متأكد؟', [
-          { text: 'إلغاء', style: 'cancel', onPress: () => setToggling(false) },
-          { text: 'إيقاف', style: 'destructive', onPress: async () => { await stopTracking(); setTracking(false); setToggling(false); } },
-        ]);
-      } else {
-        const ok = await requestPermissions();
-        if (!ok) { Alert.alert('صلاحية مطلوبة', 'اسمح بالوصول للموقع دائماً من الإعدادات.'); setToggling(false); return; }
-        await startTracking();
-        setTracking(true);
+    Alert.alert('إيقاف الجلسة', 'سيتوقف إرسال موقعك. هل أنت متأكد؟', [
+      { text: 'إلغاء', style: 'cancel', onPress: () => setToggling(false) },
+      { text: 'إيقاف', style: 'destructive', onPress: async () => {
+        try { await stopTracking(); } catch {}
+        setTracking(false);
         setToggling(false);
-      }
-    } catch (e: any) { Alert.alert('خطأ', e.message); setToggling(false); }
+      }},
+    ]);
   };
 
   const onRefresh = async () => { setRefreshing(true); await refresh(); setRefreshing(false); };
@@ -76,8 +71,8 @@ export default function DashboardScreen() {
         <TouchableOpacity onPress={handleToggle} disabled={toggling} activeOpacity={0.88}
           style={[s.toggleCard, tracking && s.toggleCardActive]}>
           <View>
-            <Text style={[s.toggleTitle, tracking && { color: '#fff' }]}>{tracking ? 'جلسة نشطة' : 'ابدأ جلسة العمل'}</Text>
-            <Text style={[s.toggleSub, tracking && { color: '#d1fae5' }]}>{tracking ? 'اضغط لإيقاف التتبع' : 'سيُرسل موقعك للمشرف تلقائياً'}</Text>
+            <Text style={[s.toggleTitle, tracking && { color: '#fff' }]}>{tracking ? 'جلسة نشطة' : 'الجلسة موقوفة'}</Text>
+            <Text style={[s.toggleSub, tracking && { color: '#d1fae5' }]}>{tracking ? 'اضغط لإيقاف التتبع' : 'تُبدأ تلقائياً عند إعادة تشغيل التطبيق'}</Text>
           </View>
           {toggling ? <ActivityIndicator color={tracking ? '#fff' : '#1e40af'} /> : <Ionicons name={tracking ? 'radio' : 'radio-outline'} size={36} color={tracking ? '#fff' : '#1e40af'} />}
         </TouchableOpacity>

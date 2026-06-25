@@ -4,6 +4,7 @@ import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
 import { startSignaling, stopSignaling } from '../../src/services/webrtc';
+import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -13,6 +14,17 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 
 export default function AppLayout() {
   const { user, loading, logout } = useAuthStore();
+
+  // Auto-start location tracking when user logs in
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      const already = await isTracking();
+      if (already) return;
+      const ok = await requestPermissions();
+      if (ok) await startTracking();
+    })();
+  }, [user?.id]);
 
   useEffect(() => {
     if (user) {
