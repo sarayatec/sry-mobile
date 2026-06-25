@@ -49,8 +49,6 @@ async function onAppStateChange(state: AppStateStatus) {
   if (state === 'background' || state === 'inactive') {
     if (Object.keys(peerConns).length > 0) {
       await showBackgroundNotif();
-      // Tell admin immediately so it reconnects without waiting for freeze detection
-      socket?.emit('employee:stream-pausing');
       streamNeedsRefresh = true;
       if (Platform.OS === 'android') {
         setTimeout(() => enterPiP(), 150);
@@ -60,12 +58,12 @@ async function onAppStateChange(state: AppStateStatus) {
     }
   } else if (state === 'active') {
     hideBackgroundNotif();
-    if (Platform.OS === 'android' && Object.keys(peerConns).length > 0) {
-      localStream?.getTracks().forEach(t => { t.enabled = true; });
-      const isAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
-      if (!isAlive) {
-        closeAllPeers();
-      }
+    if (Platform.OS === 'android' && streamNeedsRefresh && Object.keys(peerConns).length > 0) {
+      // Returned from background — close stale connections so admin reconnects.
+      // Reconnect offer will arrive while we're in foreground where getUserMedia works.
+      streamNeedsRefresh = false;
+      closeAllPeers();
+      socket?.emit('employee:stream-pausing'); // tell admin to reconnect immediately
     }
   }
 }
