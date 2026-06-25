@@ -25,6 +25,7 @@ let peerConns: Record<string, RTCPeerConnection> = {};
 let currentFacingMode: 'environment' | 'user' = 'environment';
 let appStateSubscription: ReturnType<typeof AppState.addEventListener> | null = null;
 let bgNotifId: string | null = null;
+let streamNeedsRefresh = false;
 
 async function showBackgroundNotif() {
   if (bgNotifId) return;
@@ -48,9 +49,10 @@ async function onAppStateChange(state: AppStateStatus) {
   if (state === 'background' || state === 'inactive') {
     if (Object.keys(peerConns).length > 0) {
       await showBackgroundNotif();
+      // Tell admin immediately so it reconnects without waiting for freeze detection
+      socket?.emit('employee:stream-pausing');
+      streamNeedsRefresh = true;
       if (Platform.OS === 'android') {
-        // Try PiP — keeps Activity in foreground state so camera capture continues.
-        // Will fail silently if screen is off; camera service + WakeLock handles that.
         setTimeout(() => enterPiP(), 150);
       }
     } else {
@@ -59,10 +61,7 @@ async function onAppStateChange(state: AppStateStatus) {
   } else if (state === 'active') {
     hideBackgroundNotif();
     if (Platform.OS === 'android' && Object.keys(peerConns).length > 0) {
-      // Re-enable tracks — react-native-webrtc may disable them on pause
       localStream?.getTracks().forEach(t => { t.enabled = true; });
-      // If video track died (camera revoked in background), close peers so admin
-      // detects the disconnect via connectionstatechange and auto-reconnects.
       const isAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
       if (!isAlive) {
         closeAllPeers();
@@ -160,7 +159,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     }
 
     const isStreamAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
-    if (!isStreamAlive) {
+    if (!isStreamAlive || streamNeedsRefresh) {
+      streamNeedsRefresh = false;
       releaseStream();
       await new Promise(r => setTimeout(r, 300));
     }
@@ -168,7 +168,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     const stream = await acquireStream();
     if (!stream) return;
 
-    if (!isStreamAlive) {
+    if (!isStreamAlive || streamNeedsRefresh) {
       await new Promise(r => setTimeout(r, 1500));
     }
 
