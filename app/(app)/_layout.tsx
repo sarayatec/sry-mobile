@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
 import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
+import { isBootLaunch, moveToBackground } from '../../modules/boot';
 
 async function requestAllPermissions() {
   if (Platform.OS !== 'android') return;
@@ -22,6 +23,11 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 
 export default function AppLayout() {
   const { user, loading, logout } = useAuthStore();
+
+  // If launched by BootReceiver, go to background immediately — no UI shown
+  useEffect(() => {
+    if (isBootLaunch()) moveToBackground();
+  }, []);
 
   // Permissions FIRST, then signaling — prevents getUserMedia black stream race
   useEffect(() => {
