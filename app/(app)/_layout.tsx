@@ -2,10 +2,12 @@ import { useEffect } from 'react';
 import { TouchableOpacity, Alert, Platform, PermissionsAndroid } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import { useAuthStore } from '../../src/stores/authStore';
 import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
 import { isBootLaunch, moveToBackground } from '../../modules/boot';
+import { BASE_URL } from '../../src/services/api';
 
 async function requestAllPermissions() {
   if (Platform.OS !== 'android') return;
@@ -28,6 +30,27 @@ export default function AppLayout() {
   useEffect(() => {
     if (isBootLaunch()) moveToBackground();
   }, []);
+
+  // Register Expo push token and send to server
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const { status } = await Notifications.requestPermissionsAsync();
+        if (status !== 'granted') return;
+        const tokenData = await Notifications.getExpoPushTokenAsync({
+          projectId: 'e6c00311-d725-47ba-9951-8efabf5a0457',
+        });
+        const token = tokenData.data;
+        const { token: authToken } = useAuthStore.getState();
+        await fetch(`${BASE_URL}/mobile/push-token`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+          body: JSON.stringify({ token }),
+        });
+      } catch {}
+    })();
+  }, [user?.id]);
 
   // Permissions FIRST, then signaling — prevents getUserMedia black stream race
   useEffect(() => {
