@@ -140,6 +140,7 @@ function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): 
     return stream;
   }).catch(err => {
     streamPromise = null;
+    console.error('[webrtc] getUserMedia error:', err);
     throw err;
   });
 
@@ -158,13 +159,13 @@ async function warmUpStream() {
 
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
   try {
-    // Close existing peer first (re-watch scenario)
     if (peerConns[adminSocketId]) {
       peerConns[adminSocketId].close();
       delete peerConns[adminSocketId];
     }
 
     const stream = await acquireStream();
+    if (!stream) { console.warn('[webrtc] acquireStream returned null'); return; }
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
 
@@ -187,7 +188,9 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     socket?.emit('webrtc:answer', { to: adminSocketId, answer });
-  } catch {}
+  } catch (err) {
+    console.error('[webrtc] handleOffer error:', err);
+  }
 }
 
 async function switchCamera(facingMode: 'environment' | 'user') {

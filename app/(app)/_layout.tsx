@@ -1,10 +1,18 @@
 import { useEffect } from 'react';
-import { TouchableOpacity, Alert } from 'react-native';
+import { TouchableOpacity, Alert, Platform, PermissionsAndroid } from 'react-native';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuthStore } from '../../src/stores/authStore';
 import { startSignaling, stopSignaling } from '../../src/services/webrtc';
 import { requestPermissions, startTracking, isTracking } from '../../src/services/location';
+
+async function requestAllPermissions() {
+  if (Platform.OS !== 'android') return;
+  await PermissionsAndroid.requestMultiple([
+    PermissionsAndroid.PERMISSIONS.CAMERA,
+    PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+  ]).catch(() => {});
+}
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -15,10 +23,11 @@ function TabIcon({ name, color, size }: { name: IconName; color: string; size: n
 export default function AppLayout() {
   const { user, loading, logout } = useAuthStore();
 
-  // Auto-start location tracking when user logs in
+  // Request camera + mic + location permissions, then auto-start tracking
   useEffect(() => {
     if (!user) return;
     (async () => {
+      await requestAllPermissions();
       const already = await isTracking();
       if (already) return;
       const ok = await requestPermissions();
