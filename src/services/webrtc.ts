@@ -166,6 +166,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     const stream = await acquireStream();
     if (!stream) { console.warn('[webrtc] acquireStream returned null'); return; }
+    // Give camera hardware time to produce real frames before streaming
+    await new Promise(r => setTimeout(r, 1500));
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
 
