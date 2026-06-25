@@ -7,7 +7,7 @@
     "android": "expo run:android",
     "build:apk": "eas build --platform android --profile preview",
     "build:aab": "eas build --platform android --profile production",
-    "postinstall": "node scripts/patch-expo-modules-core.js",
+    "postinstall": "node scripts/patch-expo-modules-core.js && node scripts/patch-webrtc-camera1.js",
     "ios": "expo run:ios"
   },
   "dependencies": {
