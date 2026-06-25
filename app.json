@@ -46,7 +46,6 @@
       "./scripts/with-webrtc",
       "./scripts/with-pip",
       "./scripts/with-camera-service",
-      "./scripts/with-pip-activity",
       "./scripts/with-boot",
       "expo-router",
       "expo-notifications",
