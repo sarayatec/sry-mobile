@@ -49,6 +49,55 @@ let _probeDropped   = 0;
 let _probeAdded     = 0;
 let _probeCandidateN = 0;
 
+// ── ICE candidate tracking ────────────────────────────────────────────────────
+interface _IceCandInfo { type: string; protocol: string; address: string; port: number; raw: string; }
+let _localCandidates: _IceCandInfo[]  = [];
+let _remoteCandidates: _IceCandInfo[] = [];
+let _selectedPair: string | null = null;
+
+function _parseCandInfo(candidate: any): _IceCandInfo {
+  // SDP candidate line e.g.:
+  // candidate:foundation 1 udp 2122194687 192.168.1.5 54321 typ host ...
+  const raw   = String(candidate?.candidate ?? candidate ?? '');
+  const parts = raw.split(' ');
+  const proto   = (parts[2] ?? candidate?.protocol ?? 'unknown').toLowerCase();
+  const addr    = parts[4] ?? candidate?.address ?? candidate?.ip ?? '?';
+  const port    = parseInt(parts[5] ?? '0', 10);
+  const typIdx  = parts.indexOf('typ');
+  const type    = typIdx >= 0 ? (parts[typIdx + 1] ?? 'unknown') : (candidate?.type ?? 'unknown');
+  return { type, protocol: proto, address: addr, port, raw: raw.substring(0, 120) };
+}
+
+function _iceCandLog(direction: 'LOCAL' | 'REMOTE', info: _IceCandInfo) {
+  const line = `[ICE_CAND] ${direction} type=${info.type} proto=${info.protocol} addr=${info.address} port=${info.port}`;
+  console.warn(line);
+  useDebugStore.getState().addLog(line);
+}
+
+function _iceFailureSummary(label: string) {
+  const localHost  = _localCandidates.filter(c => c.type === 'host');
+  const localSrflx = _localCandidates.filter(c => c.type === 'srflx');
+  const localRelay = _localCandidates.filter(c => c.type === 'relay');
+  const remHost    = _remoteCandidates.filter(c => c.type === 'host');
+  const remSrflx   = _remoteCandidates.filter(c => c.type === 'srflx');
+  const remRelay   = _remoteCandidates.filter(c => c.type === 'relay');
+
+  const lines = [
+    `[ICE_SUMMARY] === ${label} ===`,
+    `[ICE_SUMMARY] LOCAL  total=${_localCandidates.length} host=${localHost.length} srflx=${localSrflx.length} relay=${localRelay.length}`,
+    `[ICE_SUMMARY] REMOTE total=${_remoteCandidates.length} host=${remHost.length} srflx=${remSrflx.length} relay=${remRelay.length}`,
+    `[ICE_SUMMARY] SELECTED_PAIR=${_selectedPair ?? 'none'}`,
+  ];
+
+  _localCandidates.forEach((c, i) =>
+    lines.push(`[ICE_SUMMARY] LOCAL[${i}] type=${c.type} proto=${c.protocol} addr=${c.address} port=${c.port}`));
+  _remoteCandidates.forEach((c, i) =>
+    lines.push(`[ICE_SUMMARY] REMOTE[${i}] type=${c.type} proto=${c.protocol} addr=${c.address} port=${c.port}`));
+
+  lines.forEach(l => { console.warn(l); useDebugStore.getState().addLog(l); });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 function _probeIceLog(msg: string) {
   const rel = _probeOfferT > 0 ? `+${Date.now() - _probeOfferT}ms` : 'T+?';
   const line = `[ICE-PROBE] ${rel} ${msg}`;
@@ -308,6 +357,10 @@ export function startSignaling(employeeId: string, name: string) {
     _probeDropped   = 0;
     _probeAdded     = 0;
     _probeCandidateN = 0;
+    // Reset ICE candidate tracking for this session
+    _localCandidates  = [];
+    _remoteCandidates = [];
+    _selectedPair     = null;
     _probeIceLog(`OFFER received from=${from} type=${offer.type}`);
     useDebugStore.getState().resetSessionDiag();
     useDebugStore.getState().setOfferReceived(_diagTs());
@@ -328,6 +381,9 @@ export function startSignaling(employeeId: string, name: string) {
     if (pc && ready) {
       // Remote description is set — safe to add immediately
       _probeAdded++;
+      const _remInfo = _parseCandInfo(candidate);
+      _remoteCandidates.push(_remInfo);
+      _iceCandLog('REMOTE', _remInfo);
       pc.addIceCandidate(new RTCIceCandidate(candidate));
       sryLog('WebRTC', 'webrtc:ice', 'ADDED', {
         from, n: _probeCandidateN, added: _probeAdded,
@@ -566,17 +622,26 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     pc.addEventListener('icecandidate', (e: any) => {
       if (e.candidate) {
-        if (e.candidate.type === 'relay') {
-          useDebugStore.getState().setTurn('ok');
-        }
+        const info = _parseCandInfo(e.candidate);
+        _localCandidates.push(info);
+        _iceCandLog('LOCAL', info);
+        if (info.type === 'relay') useDebugStore.getState().setTurn('ok');
         sryLog('WebRTC', 'icecandidate', 'LOCAL_CANDIDATE', {
-          type: e.candidate.type ?? 'unknown',
-          protocol: e.candidate.protocol ?? 'unknown',
-          candidate: String(e.candidate.candidate ?? '').substring(0, 80),
+          type: info.type, protocol: info.protocol,
+          address: info.address, port: info.port,
         });
         socket?.emit('webrtc:ice', { to: adminSocketId, candidate: e.candidate });
       } else {
         sryLog('WebRTC', 'icecandidate', 'GATHERING_COMPLETE', {});
+      }
+    });
+
+    pc.addEventListener('selectedcandidatepairchange', (e: any) => {
+      const local  = e.candidate?.local  ?? e.localCandidate;
+      const remote = e.candidate?.remote ?? e.remoteCandidate;
+      if (local && remote) {
+        _selectedPair = `local:${local.type}/${local.protocol}/${local.address}:${local.port} ↔ remote:${remote.type}/${remote.protocol}/${remote.address}:${remote.port}`;
+        sryLog('WebRTC', 'selectedcandidatepairchange', 'PAIR', { pair: _selectedPair });
       }
     });
 
@@ -587,6 +652,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       if (iceState === 'failed') {
         useDebugStore.getState().setTurn('failed');
         writeCrashLog(`ICE connection FAILED adminSocketId=${adminSocketId}`);
+        _iceFailureSummary('ICE_FAILED');
       }
       sryLog('WebRTC', 'iceconnectionstatechange', iceState.toUpperCase(), {
         adminSocketId,
@@ -640,6 +706,9 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       let _addedCount = 0;
       queued.forEach((c, i) => {
         try {
+          const _remInfo = _parseCandInfo(c);
+          _remoteCandidates.push(_remInfo);
+          _iceCandLog('REMOTE', _remInfo);
           pc.addIceCandidate(new RTCIceCandidate(c));
           _probeAdded++;
           _addedCount++;

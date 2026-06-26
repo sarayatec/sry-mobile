@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-const MAX_LINES = 200;
+const MAX_LINES = 500;
 
 export type MediaStatus = 'unknown' | 'ok' | 'denied' | 'error';
 export type FgsStatus = 'unknown' | 'running' | 'failed' | 'crashed';
