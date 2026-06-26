@@ -43,23 +43,43 @@ const remoteDescReady: Set<string> = new Set();
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── ICE-race instrumentation ──────────────────────────────────────────────────
-// Temporary: proves/disproves the candidate-drop hypothesis.
-// Remove after hypothesis confirmed.
-let _probeOfferT = 0;          // Date.now() when offer received
-let _probePcT    = 0;          // Date.now() when RTCPeerConnection created
-let _probeDropped   = 0;       // candidates discarded (no peer)
-let _probeAdded     = 0;       // candidates successfully passed to addIceCandidate
-let _probeCandidateN = 0;      // sequential counter across all incoming candidates
+let _probeOfferT = 0;
+let _probePcT    = 0;
+let _probeDropped   = 0;
+let _probeAdded     = 0;
+let _probeCandidateN = 0;
 
 function _probeIceLog(msg: string) {
   const rel = _probeOfferT > 0 ? `+${Date.now() - _probeOfferT}ms` : 'T+?';
   const line = `[ICE-PROBE] ${rel} ${msg}`;
-  console.warn(line);           // console.warn so it stands out in logcat
+  console.warn(line);
   try {
     const { useDebugStore } = require('../stores/debugStore');
     useDebugStore.getState().addLog(line);
   } catch (_) {}
 }
+
+// ── Queue lifecycle instrumentation ──────────────────────────────────────────
+// Tracks every push, flush, add, and delete on pendingCandidates.
+// Purpose: prove exactly where Queued=8 / Added=0 / Pending=0 occurs.
+let _queueOfferPeerId = 'UNSET'; // peerId from the current handleOffer invocation
+
+function _queueLog(msg: string) {
+  const rel = _probeOfferT > 0 ? `+${Date.now() - _probeOfferT}ms` : 'T+?';
+  const line = `[QUEUE_LIFECYCLE] ${rel} ${msg}`;
+  console.warn(line);
+  try {
+    const { useDebugStore } = require('../stores/debugStore');
+    useDebugStore.getState().addLog(line);
+  } catch (_) {}
+}
+
+function _deletePendingCandidates(peerId: string, reason: string) {
+  const sizeBefore = pendingCandidates[peerId]?.length ?? 0;
+  delete pendingCandidates[peerId];
+  _queueLog(`QUEUE_DELETE peerId=${peerId} reason=${reason} sizeBefore=${sizeBefore} offerPeerId=${_queueOfferPeerId} match=${peerId === _queueOfferPeerId}`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Signaling-state instrumentation ──────────────────────────────────────────
@@ -319,7 +339,10 @@ export function startSignaling(employeeId: string, name: string) {
       if (!pendingCandidates[from]) pendingCandidates[from] = [];
       pendingCandidates[from].push(candidate);
       const qSize = pendingCandidates[from].length;
-      _probeDropped = 0; // reset — nothing is dropped anymore
+      _probeDropped = 0;
+      // ── QUEUE_PUSH ────────────────────────────────────────────────────────
+      _queueLog(`QUEUE_PUSH peerId=${from} queueLength=${qSize} offerPeerId=${_queueOfferPeerId} peerIdMatch=${from === _queueOfferPeerId} hasPc=${!!pc} remoteDescReady=${ready}`);
+      // ─────────────────────────────────────────────────────────────────────
       sryLog('WebRTC', 'webrtc:ice', 'QUEUED', {
         from, n: _probeCandidateN, queueSize: qSize,
         hasPc: !!pc, remoteDescReady: ready,
@@ -331,7 +354,7 @@ export function startSignaling(employeeId: string, name: string) {
     store.setIceCounts(
       _probeCandidateN,
       _probeAdded,
-      0, // dropped is always 0 — candidates are queued, never discarded
+      0,
       (pendingCandidates[from] ?? []).length,
     );
   });
@@ -438,6 +461,10 @@ function releaseStream() {
 }
 
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
+  // Record the peerId this handleOffer invocation owns — compared against ice handler peerId
+  _queueOfferPeerId = adminSocketId;
+  _queueLog(`QUEUE_OFFER_PEER_SET peerId=${adminSocketId} pendingAtEntry=${pendingCandidates[adminSocketId]?.length ?? 0}`);
+
   // Signaling probe: track concurrent invocations
   _sigT0 = Date.now();
   const _myInvId = ++_sigInvocation;
@@ -469,9 +496,11 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       // Set guard BEFORE close() so the connectionstatechange event that fires
       // synchronously inside close() does not call releaseStream() via closePeer.
       isReconnecting = true;
+      _queueLog(`QUEUE_OLD_PEER_CLOSE peerId=${adminSocketId} pendingBeforeClose=${pendingCandidates[adminSocketId]?.length ?? 0} isReconnecting=true`);
       sryLog('WebRTC', 'handleOffer', 'CLOSING_OLD_PEER', { adminSocketId });
       peerConns[adminSocketId].close();
       delete peerConns[adminSocketId];
+      _queueLog(`QUEUE_OLD_PEER_CLOSED peerId=${adminSocketId} pendingAfterClose=${pendingCandidates[adminSocketId]?.length ?? 0} note=closePeer-may-have-fired-async`);
       sryLog('WebRTC', 'handleOffer', 'OLD_PEER_CLOSED', { adminSocketId });
     }
 
@@ -584,7 +613,12 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
         adminSocketId,
         peerCount: Object.keys(peerConns).length,
       });
-      if (s === 'failed' || s === 'closed') closePeer(adminSocketId);
+      if (s === 'failed' || s === 'closed') {
+        // ── QUEUE_LIFECYCLE: log that connectionstatechange is triggering closePeer ──
+        _queueLog(`QUEUE_CONN_STATE_TRIGGER_CLOSE peerId=${adminSocketId} connState=${s} pendingSize=${pendingCandidates[adminSocketId]?.length ?? 0} peerConnsIsMe=${peerConnsIsMe}`);
+        // ─────────────────────────────────────────────────────────────────────────────
+        closePeer(adminSocketId);
+      }
     });
 
     _sigLog(_myInvId, _myPcId, `BEFORE_SET_REMOTE_DESC peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
@@ -596,26 +630,35 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     useDebugStore.getState().setRemoteDescApplied(_diagTs(), (pc as any).signalingState ?? 'unknown');
 
     // ── Flush queued ICE candidates ───────────────────────────────────────────
-    // Mark this peer as remote-desc-ready so future candidates bypass the queue.
     remoteDescReady.add(adminSocketId);
+    // ── QUEUE_FLUSH_START ─────────────────────────────────────────────────────
+    const _pendingKeys = Object.keys(pendingCandidates);
+    const _sizeForFlushPeer = pendingCandidates[adminSocketId]?.length ?? 0;
+    _queueLog(`QUEUE_FLUSH_START peerId=${adminSocketId} queueLength=${_sizeForFlushPeer} allPendingKeys=${JSON.stringify(_pendingKeys)} _queueOfferPeerId=${_queueOfferPeerId} peerIdMatch=${adminSocketId === _queueOfferPeerId}`);
+    // ─────────────────────────────────────────────────────────────────────────
     const queued = pendingCandidates[adminSocketId] ?? [];
     if (queued.length > 0) {
-      sryLog('WebRTC', 'flushQueue', 'FLUSHING', {
-        adminSocketId, count: queued.length,
-      });
+      sryLog('WebRTC', 'flushQueue', 'FLUSHING', { adminSocketId, count: queued.length });
       queued.forEach((c, i) => {
-        pc.addIceCandidate(new RTCIceCandidate(c));
-        _probeAdded++;
-        sryLog('WebRTC', 'flushQueue', 'ADDED', {
-          adminSocketId, i, total: queued.length, runningAdded: _probeAdded,
-        });
+        try {
+          pc.addIceCandidate(new RTCIceCandidate(c));
+          _probeAdded++;
+          _queueLog(`QUEUE_ADD_SUCCESS candidateIndex=${i} runningAdded=${_probeAdded} pcState=${(pc as any).signalingState ?? '?'}`);
+          sryLog('WebRTC', 'flushQueue', 'ADDED', {
+            adminSocketId, i, total: queued.length, runningAdded: _probeAdded,
+          });
+        } catch (addErr) {
+          _queueLog(`QUEUE_ADD_FAILURE candidateIndex=${i} error=${String(addErr)} pcState=${(pc as any).signalingState ?? '?'}`);
+          sryLog('WebRTC', 'flushQueue', 'ADD_ERROR', { i, err: String(addErr) });
+        }
       });
-      delete pendingCandidates[adminSocketId];
+      _deletePendingCandidates(adminSocketId, 'flush_complete');
       sryLog('WebRTC', 'flushQueue', 'COMPLETE', {
         adminSocketId, flushed: queued.length, added: _probeAdded,
         remaining: Object.keys(pendingCandidates).length,
       });
     } else {
+      _queueLog(`QUEUE_FLUSH_EMPTY peerId=${adminSocketId} allPendingKeys=${JSON.stringify(Object.keys(pendingCandidates))} — candidates may have been stored under a different peerId or cleared by closePeer`);
       sryLog('WebRTC', 'flushQueue', 'EMPTY', { adminSocketId });
     }
     // Update panel with final counts after flush
@@ -703,6 +746,9 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 function closePeer(adminSocketId: string) {
   const peerExists = !!peerConns[adminSocketId];
   const targetPc = peerConns[adminSocketId] as any;
+  // ── QUEUE_LIFECYCLE: log closePeer call ───────────────────────────────────
+  _queueLog(`QUEUE_CLOSE_PEER_CALLED peerId=${adminSocketId} pendingSize=${pendingCandidates[adminSocketId]?.length ?? 0} isReconnecting=${isReconnecting} offerPeerId=${_queueOfferPeerId} peerIdMatch=${adminSocketId === _queueOfferPeerId}`);
+  // ─────────────────────────────────────────────────────────────────────────
   _sigLog(_sigInvocation, _sigPcId,
     `closePeer CALLED peerExists=${peerExists} sig=${targetPc?.signalingState ?? 'N/A'} conn=${targetPc?.connectionState ?? 'N/A'}`);
   sryLog('WebRTC', 'closePeer', 'CALLED', {
@@ -714,7 +760,7 @@ function closePeer(adminSocketId: string) {
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
   // Clean up queue state for this peer
-  delete pendingCandidates[adminSocketId];
+  _deletePendingCandidates(adminSocketId, 'closePeer');
   remoteDescReady.delete(adminSocketId);
   const remaining = Object.keys(peerConns).length;
   sryLog('WebRTC', 'closePeer', 'PEER_REMOVED', { adminSocketId, remaining });
@@ -740,7 +786,7 @@ function closeAllPeers() {
   Object.keys(peerConns).forEach(id => {
     sryLog('WebRTC', 'closeAllPeers', 'CLOSING', { id });
     peerConns[id]?.close();
-    delete pendingCandidates[id];
+    _deletePendingCandidates(id, 'closeAllPeers');
     remoteDescReady.delete(id);
   });
   peerConns = {};
