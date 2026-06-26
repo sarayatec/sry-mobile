@@ -46,3 +46,41 @@ export function isBatteryOptimizationIgnored(): boolean {
 export function requestDisableBatteryOptimization(): void {
   try { mod?.requestDisableBatteryOptimization(); } catch {}
 }
+
+// ── Debug file I/O ────────────────────────────────────────────────────────────
+
+export function writeDebugLog(line: string): void {
+  try { mod?.writeDebugLog(line); } catch {}
+}
+
+export function writeCrashLog(line: string): void {
+  try { mod?.writeCrashLog(line); } catch {}
+}
+
+// Read last N lines of debug.log (pass 0 for all). Returns empty string if none.
+export function readDebugLog(maxLines = 200): string {
+  try { return mod?.readDebugLog(maxLines) ?? ''; } catch { return ''; }
+}
+
+export function readCrashLog(): string {
+  try { return mod?.readCrashLog() ?? ''; } catch { return ''; }
+}
+
+// Create debug.zip in app-specific external storage.
+// Pass a JSON string snapshot of current runtime state.
+// Returns absolute path to the zip file.
+export function exportLogs(stateJson: string): string {
+  try { return mod?.exportLogs(stateJson) ?? ''; } catch { return ''; }
+}
+
+export function getDeviceInfo(): string {
+  try { return mod?.getDeviceInfo() ?? '{}'; } catch { return '{}'; }
+}
+
+export function clearDebugLogs(): void {
+  try { mod?.clearLogs(); } catch {}
+}
+
+export function getWakeLockHeld(): boolean {
+  try { return !!mod?.getWakeLockHeld(); } catch { return false; }
+}

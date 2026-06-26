@@ -18,6 +18,9 @@ object SRYSession {
   /** System.currentTimeMillis() when the session started; 0 when idle. */
   @Volatile var startMs: Long = 0L
 
+  /** True while CameraForegroundService holds its PARTIAL_WAKE_LOCK. */
+  @Volatile var wakeLockHeld: Boolean = false
+
   /** Returns elapsed milliseconds since session start, or 0 if not started. */
   fun elapsedMs(): Long = if (startMs > 0L) System.currentTimeMillis() - startMs else 0L
 

@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect } from 'react';
-import { View, ActivityIndicator, StyleSheet, Platform, PermissionsAndroid } from 'react-native';
+import { View, ActivityIndicator, StyleSheet, Platform, PermissionsAndroid, TouchableOpacity, Text } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as SecureStore from 'expo-secure-store';
+import DebugPanel from '../../src/components/DebugPanel';
 
 const SRY_URL = 'https://sry.sarayatec.com';
 
@@ -25,6 +26,7 @@ function buildPreloadScript(token: string, userRaw: string | null): string {
 export default function SystemScreen() {
   const webRef = useRef<WebView>(null);
   const [loading, setLoading] = useState(true);
+  const [debugVisible, setDebugVisible] = useState(false);
   // null = still reading token, string = ready (may be empty if no token)
   const [preloadScript, setPreloadScript] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
@@ -67,6 +69,15 @@ export default function SystemScreen() {
           <ActivityIndicator size="large" color="#1e40af" />
         </View>
       )}
+      {/* Debug button — sits just below the safe-area inset, visible above the WebView */}
+      <TouchableOpacity
+        style={[styles.debugBtn, { top: insets.top + 8 }]}
+        onPress={() => setDebugVisible(true)}
+        hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}
+      >
+        <Text style={styles.debugBtnText}>⚙</Text>
+      </TouchableOpacity>
+      <DebugPanel visible={debugVisible} onClose={() => setDebugVisible(false)} />
       <WebView
         ref={webRef}
         source={{ uri: SRY_URL }}
@@ -105,4 +116,10 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
     backgroundColor: '#0f172a',
   },
+  debugBtn: {
+    position: 'absolute', top: 8, right: 12, zIndex: 20,
+    backgroundColor: 'rgba(30,58,138,0.7)', borderRadius: 16,
+    width: 32, height: 32, alignItems: 'center', justifyContent: 'center',
+  },
+  debugBtnText: { color: '#93c5fd', fontSize: 16 },
 });

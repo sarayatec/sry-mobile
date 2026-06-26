@@ -11,6 +11,8 @@ import {
 } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
 import { sryLog, setLogSessionId } from '../utils/log';
+import { useDebugStore } from '../stores/debugStore';
+import { writeCrashLog } from '../../modules/camera-service';
 
 const SIGNAL_URL = 'https://sry.sarayatec.com';
 const ICE_SERVERS = [
@@ -47,6 +49,7 @@ function startSession(reason: string, adminSocketId: string) {
   sessionStartTime = Date.now();
   setLogSessionId(currentSessionId);
   setNativeSessionId(currentSessionId);
+  useDebugStore.getState().setSessionId(currentSessionId);
   sryLog('Session', 'startSession', 'SESSION_STARTED', {
     sessionId: currentSessionId,
     reason,
@@ -70,6 +73,7 @@ function endSession(reason: string, extra?: Record<string, unknown>) {
   sessionStartTime = 0;
   setLogSessionId('none');
   setNativeSessionId('none');
+  useDebugStore.getState().setSessionId('none');
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -156,8 +160,10 @@ export function startSignaling(employeeId: string, name: string) {
   if (Platform.OS === 'android') {
     sryLog('Service', 'startSignaling', 'STARTING_SESSION_SERVICE', {});
     startSessionService();
+    useDebugStore.getState().setFgs('running');
   }
 
+  useDebugStore.getState().setSocket('connecting');
   appStateSubscription = AppState.addEventListener('change', onAppStateChange);
   sryLog('AppState', 'startSignaling', 'APPSTATE_LISTENER_REGISTERED', {});
 
@@ -170,11 +176,13 @@ export function startSignaling(employeeId: string, name: string) {
 
   socket.on('connect', () => {
     sryLog('Socket', 'connect', 'CONNECTED', { socketId: socket?.id });
+    useDebugStore.getState().setSocket('connected', socket?.id ?? '');
     socket!.emit('employee:register', { employeeId, name });
     sryLog('Socket', 'connect', 'REGISTERED', { employeeId, name });
   });
 
   socket.on('disconnect', (reason) => {
+    useDebugStore.getState().setSocket('disconnected');
     sryLog('Socket', 'disconnect', 'DISCONNECTED', {
       reason,
       peerCount: Object.keys(peerConns).length,
@@ -306,9 +314,15 @@ function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): 
       videoState: stream.getVideoTracks()[0]?.readyState ?? 'none',
       audioState: stream.getAudioTracks()[0]?.readyState ?? 'none',
     });
+    useDebugStore.getState().setCamera('ok');
+    useDebugStore.getState().setMic(stream.getAudioTracks().length > 0 ? 'ok' : 'error');
     return stream;
   }).catch(err => {
     streamPromise = null;
+    useDebugStore.getState().setCamera('error');
+    useDebugStore.getState().setMic('error');
+    useDebugStore.getState().setException(`getUserMedia: ${String(err)}`);
+    writeCrashLog(`getUserMedia FAILED err=${String(err)}`);
     sryLog('Camera', 'getUserMedia', 'ERROR', { err: String(err), name: (err as any)?.name });
     throw err;
   });
@@ -422,6 +436,9 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     pc.addEventListener('icecandidate', (e: any) => {
       if (e.candidate) {
+        if (e.candidate.type === 'relay') {
+          useDebugStore.getState().setTurn('ok');
+        }
         sryLog('WebRTC', 'icecandidate', 'LOCAL_CANDIDATE', {
           type: e.candidate.type ?? 'unknown',
           protocol: e.candidate.protocol ?? 'unknown',
@@ -434,7 +451,13 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     });
 
     pc.addEventListener('iceconnectionstatechange', () => {
-      sryLog('WebRTC', 'iceconnectionstatechange', ((pc as any).iceConnectionState ?? 'unknown').toUpperCase(), {
+      const iceState = (pc as any).iceConnectionState ?? 'unknown';
+      useDebugStore.getState().setIce(iceState);
+      if (iceState === 'failed') {
+        useDebugStore.getState().setTurn('failed');
+        writeCrashLog(`ICE connection FAILED adminSocketId=${adminSocketId}`);
+      }
+      sryLog('WebRTC', 'iceconnectionstatechange', iceState.toUpperCase(), {
         adminSocketId,
       });
     });
@@ -480,6 +503,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
   } catch (err) {
     isReconnecting = false;
+    useDebugStore.getState().setException(`handleOffer: ${String(err)}`);
+    writeCrashLog(`handleOffer ERROR adminSocketId=${adminSocketId} err=${String(err)}`);
     sryLog('WebRTC', 'handleOffer', 'ERROR', { err: String(err), adminSocketId });
     console.error('[webrtc] handleOffer error:', err);
   }

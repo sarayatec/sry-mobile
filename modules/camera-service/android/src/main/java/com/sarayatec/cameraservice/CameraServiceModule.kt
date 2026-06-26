@@ -133,6 +133,101 @@ class CameraServiceModule : Module() {
         .edit().putBoolean(KEY, false).apply()
     }
 
+    // ── Debug file helpers ────────────────────────────────────────────────────
+
+    // Append a line to debug.log in app-private storage (no permissions needed).
+    Function("writeDebugLog") { line: String ->
+      val ctx = appContext.reactContext ?: return@Function
+      try {
+        java.io.File(ctx.filesDir, "debug.log").appendText("$line\n")
+      } catch (_: Exception) {}
+    }
+
+    // Append a line (with optional stack trace marker) to crash.log.
+    Function("writeCrashLog") { line: String ->
+      val ctx = appContext.reactContext ?: return@Function
+      try {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+        java.io.File(ctx.filesDir, "crash.log").appendText("[$ts] $line\n")
+      } catch (_: Exception) {}
+    }
+
+    // Read the last N lines of debug.log. Pass 0 to get all lines.
+    Function("readDebugLog") { maxLines: Int ->
+      val ctx = appContext.reactContext ?: return@Function ""
+      try {
+        val f = java.io.File(ctx.filesDir, "debug.log")
+        if (!f.exists()) return@Function ""
+        val all = f.readLines()
+        (if (maxLines > 0) all.takeLast(maxLines) else all).joinToString("\n")
+      } catch (e: Exception) { "ERROR: ${e.message}" }
+    }
+
+    // Read all of crash.log.
+    Function("readCrashLog") {
+      val ctx = appContext.reactContext ?: return@Function ""
+      try {
+        val f = java.io.File(ctx.filesDir, "crash.log")
+        if (!f.exists()) return@Function ""
+        f.readText()
+      } catch (e: Exception) { "ERROR: ${e.message}" }
+    }
+
+    // Build debug.zip from log files and a runtime state snapshot.
+    // Returns the absolute path to the zip (app-specific external storage,
+    // accessible via Android/data/com.sarayatec.sryfield/files/).
+    Function("exportLogs") { stateJson: String ->
+      val ctx = appContext.reactContext ?: return@Function ""
+      try {
+        val ts = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        // Write helper JSON files next to the log files
+        java.io.File(ctx.filesDir, "device_info.json").writeText(
+          """{"manufacturer":"${Build.MANUFACTURER}","model":"${Build.MODEL}","sdk":${Build.VERSION.SDK_INT},"android":"${Build.VERSION.RELEASE}","exportTime":"$ts"}"""
+        )
+        java.io.File(ctx.filesDir, "app_version.json").writeText(
+          """{"package":"${ctx.packageName}","exportTime":"$ts"}"""
+        )
+        java.io.File(ctx.filesDir, "runtime_state.json").writeText(stateJson)
+
+        val zipFile = java.io.File(ctx.getExternalFilesDir(null), "debug.zip")
+        java.util.zip.ZipOutputStream(
+          java.io.BufferedOutputStream(java.io.FileOutputStream(zipFile))
+        ).use { zos ->
+          listOf("debug.log", "crash.log", "device_info.json", "app_version.json", "runtime_state.json")
+            .forEach { name ->
+              val f = java.io.File(ctx.filesDir, name)
+              if (f.exists()) {
+                zos.putNextEntry(java.util.zip.ZipEntry(name))
+                f.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+              }
+            }
+        }
+        zipFile.absolutePath
+      } catch (e: Exception) { "ERROR: ${e.message}" }
+    }
+
+    // Return device info as JSON string.
+    Function("getDeviceInfo") {
+      val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+      """{"manufacturer":"${Build.MANUFACTURER}","model":"${Build.MODEL}","sdk":${Build.VERSION.SDK_INT},"android":"${Build.VERSION.RELEASE}","ts":"$ts","wakeLockHeld":${SRYSession.wakeLockHeld}}"""
+    }
+
+    // Delete debug.log and crash.log.
+    Function("clearLogs") {
+      val ctx = appContext.reactContext ?: return@Function
+      listOf("debug.log", "crash.log").forEach { name ->
+        try { java.io.File(ctx.filesDir, name).delete() } catch (_: Exception) {}
+      }
+    }
+
+    // Whether the camera foreground service currently holds the wake lock.
+    Function("getWakeLockHeld") {
+      SRYSession.wakeLockHeld
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     // Returns true if the app is already exempt from battery optimization.
     Function("isBatteryOptimizationIgnored") {
       val ctx = appContext.reactContext ?: return@Function false

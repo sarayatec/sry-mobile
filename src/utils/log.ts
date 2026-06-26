@@ -45,5 +45,12 @@ export function sryLog(
   const valStr = values
     ? ' | ' + Object.entries(values).map(([k, v]) => `${k}=${v}`).join(' ')
     : '';
-  console.log(`[${ts()}] [js-main] ${sessionPrefix}[${component}] [${method}] ${state}${valStr}`);
+  const line = `[${ts()}] [js-main] ${sessionPrefix}[${component}] [${method}] ${state}${valStr}`;
+  console.log(line);
+  // Fan-out to in-memory debug store (read by Debug panel without ADB)
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { useDebugStore } = require('../stores/debugStore');
+    useDebugStore.getState().addLog(line);
+  } catch (_) {}
 }
