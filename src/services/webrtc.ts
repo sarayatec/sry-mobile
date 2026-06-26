@@ -631,36 +631,30 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     // ── Flush queued ICE candidates ───────────────────────────────────────────
     remoteDescReady.add(adminSocketId);
-    // ── QUEUE_FLUSH_START ─────────────────────────────────────────────────────
-    const _pendingKeys = Object.keys(pendingCandidates);
-    const _sizeForFlushPeer = pendingCandidates[adminSocketId]?.length ?? 0;
-    _queueLog(`QUEUE_FLUSH_START peerId=${adminSocketId} queueLength=${_sizeForFlushPeer} allPendingKeys=${JSON.stringify(_pendingKeys)} _queueOfferPeerId=${_queueOfferPeerId} peerIdMatch=${adminSocketId === _queueOfferPeerId}`);
-    // ─────────────────────────────────────────────────────────────────────────
     const queued = pendingCandidates[adminSocketId] ?? [];
+
+    // BEFORE_FLUSH — always logged regardless of queue size
+    _queueLog(`BEFORE_FLUSH peerId=${adminSocketId} queueLength=${queued.length} remoteDescNotNull=${pc.remoteDescription != null} allPendingKeys=${JSON.stringify(Object.keys(pendingCandidates))}`);
+
     if (queued.length > 0) {
-      sryLog('WebRTC', 'flushQueue', 'FLUSHING', { adminSocketId, count: queued.length });
+      let _addedCount = 0;
       queued.forEach((c, i) => {
         try {
           pc.addIceCandidate(new RTCIceCandidate(c));
           _probeAdded++;
-          _queueLog(`QUEUE_ADD_SUCCESS candidateIndex=${i} runningAdded=${_probeAdded} pcState=${(pc as any).signalingState ?? '?'}`);
-          sryLog('WebRTC', 'flushQueue', 'ADDED', {
-            adminSocketId, i, total: queued.length, runningAdded: _probeAdded,
-          });
+          _addedCount++;
+          _queueLog(`QUEUE_ADD_SUCCESS candidateIndex=${i} runningAdded=${_probeAdded} pcSigState=${(pc as any).signalingState ?? '?'}`);
         } catch (addErr) {
-          _queueLog(`QUEUE_ADD_FAILURE candidateIndex=${i} error=${String(addErr)} pcState=${(pc as any).signalingState ?? '?'}`);
-          sryLog('WebRTC', 'flushQueue', 'ADD_ERROR', { i, err: String(addErr) });
+          _queueLog(`QUEUE_ADD_FAILURE candidateIndex=${i} error=${String(addErr)} pcSigState=${(pc as any).signalingState ?? '?'}`);
         }
       });
       _deletePendingCandidates(adminSocketId, 'flush_complete');
-      sryLog('WebRTC', 'flushQueue', 'COMPLETE', {
-        adminSocketId, flushed: queued.length, added: _probeAdded,
-        remaining: Object.keys(pendingCandidates).length,
-      });
+      // AFTER_FLUSH — logged only when loop body was reached
+      _queueLog(`AFTER_FLUSH addedCount=${_addedCount} remainingQueue=${pendingCandidates[adminSocketId]?.length ?? 0}`);
     } else {
-      _queueLog(`QUEUE_FLUSH_EMPTY peerId=${adminSocketId} allPendingKeys=${JSON.stringify(Object.keys(pendingCandidates))} — candidates may have been stored under a different peerId or cleared by closePeer`);
-      sryLog('WebRTC', 'flushQueue', 'EMPTY', { adminSocketId });
+      _queueLog(`FLUSH_SKIPPED_EMPTY_QUEUE peerId=${adminSocketId} allPendingKeys=${JSON.stringify(Object.keys(pendingCandidates))}`);
     }
+
     // Update panel with final counts after flush
     useDebugStore.getState().setIceCounts(
       _probeCandidateN, _probeAdded, 0,
