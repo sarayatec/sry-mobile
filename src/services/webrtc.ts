@@ -59,6 +59,11 @@ let _sigT0 = 0;               // Date.now() when current handleOffer started
 let _sigInvocation = 0;       // increments each handleOffer call — detects concurrent invocations
 let _sigPcId = 0;             // increments each new RTCPeerConnection — detects PC identity changes
 
+function _diagTs(): string {
+  const d = new Date();
+  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}.${String(d.getMilliseconds()).padStart(3,'0')}`;
+}
+
 function _sigLog(invId: number, pcId: number, msg: string, pc?: any) {
   const rel = _sigT0 > 0 ? `+${Date.now() - _sigT0}ms` : 'T+?';
   const ss  = pc ? (pc.signalingState    ?? '?') : '-';
@@ -274,6 +279,8 @@ export function startSignaling(employeeId: string, name: string) {
     _probeAdded     = 0;
     _probeCandidateN = 0;
     _probeIceLog(`OFFER received from=${from} type=${offer.type}`);
+    useDebugStore.getState().resetSessionDiag();
+    useDebugStore.getState().setOfferReceived(_diagTs());
     sryLog('WebRTC', 'webrtc:offer', 'RECEIVED', {
       from,
       offerType: offer.type,
@@ -293,6 +300,7 @@ export function startSignaling(employeeId: string, name: string) {
       _probeDropped++;
       _probeIceLog(`ICE #${_probeCandidateN} DROPPED hasPeer=false added=${_probeAdded} dropped=${_probeDropped} type=${(candidate as any).type ?? '?'}`);
     }
+    useDebugStore.getState().setIceCounts(_probeCandidateN, _probeAdded, _probeDropped);
     sryLog('WebRTC', 'webrtc:ice', 'RECEIVED', {
       from,
       hasPeer: !!pc,
@@ -557,6 +565,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     // ── CRITICAL PROBE: signalingState immediately after setRemoteDescription ──
     _sigLog(_myInvId, _myPcId, `AFTER_SET_REMOTE_DESC peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog(`setRemoteDescription DONE signalingState=${(pc as any).signalingState}`);
+    useDebugStore.getState().setRemoteDescApplied(_diagTs(), (pc as any).signalingState ?? 'unknown');
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION_DONE', {
       signalingState: (pc as any).signalingState,
     });
@@ -568,6 +577,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     const answer = await pc.createAnswer();
     _sigLog(_myInvId, _myPcId, `AFTER_CREATE_ANSWER peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog(`createAnswer DONE type=${answer.type}`);
+    useDebugStore.getState().setAnswerCreated(_diagTs());
     sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER_DONE', { answerType: answer.type });
 
     await pc.setLocalDescription(answer);
@@ -577,6 +587,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     });
 
     socket?.emit('webrtc:answer', { to: adminSocketId, answer });
+    useDebugStore.getState().setAnswerSent(_diagTs());
     _probeIceLog(`ANSWER_SENT to=${adminSocketId} SUMMARY: dropped=${_probeDropped} added=${_probeAdded} pcCreatedAt=+${_probePcT - _probeOfferT}ms`);
     sryLog('WebRTC', 'handleOffer', 'ANSWER_SENT', { to: adminSocketId });
 

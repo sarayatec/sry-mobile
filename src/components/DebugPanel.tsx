@@ -58,6 +58,20 @@ function iceColor(s: string): StatusColor {
   return 'dim';
 }
 
+function DiagRow({ n, label, yes, ts, extra }: { n: string; label: string; yes: boolean; ts: string; extra?: string }) {
+  return (
+    <View style={styles.diagBox}>
+      <Text style={styles.diagNum}>{n}</Text>
+      <View style={styles.diagBody}>
+        <Text style={styles.diagLabel}>{label}</Text>
+        <Text style={[styles.diagYN, yes ? styles.ok : styles.err]}>{yes ? 'YES' : 'NO'}</Text>
+        <Text style={styles.diagLine}>{ts}</Text>
+        {extra ? <Text style={styles.diagLine}>{extra}</Text> : null}
+      </View>
+    </View>
+  );
+}
+
 function Row({ label, value, color }: { label: string; value: string; color?: StatusColor }) {
   return (
     <View style={styles.row}>
@@ -80,6 +94,11 @@ export default function DebugPanel({ visible, onClose }: Props) {
     cameraStatus, micStatus, fgsStatus, socketStatus, socketId,
     iceState, turnState, wakeLockHeld, sessionId, currentException,
     logs, clearLogs,
+    offerReceived, offerTs,
+    remoteDescApplied, remoteDescTs, remoteDescSigState,
+    answerCreated, answerCreatedTs,
+    answerSent, answerSentTs,
+    iceCandidatesReceived, iceCandidatesAdded, iceCandidatesDropped,
   } = useDebugStore();
 
   const handleExport = useCallback(async () => {
@@ -177,6 +196,36 @@ export default function DebugPanel({ visible, onClose }: Props) {
         </View>
 
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+          {/* Session diagnostics — 5 runtime proof points */}
+          <Text style={styles.section}>تشخيص الجلسة</Text>
+          <DiagRow
+            n="1" label="Offer Received"
+            yes={offerReceived} ts={offerTs}
+          />
+          <DiagRow
+            n="2" label="Remote Description Applied"
+            yes={remoteDescApplied} ts={remoteDescTs}
+            extra={`signalingState: ${remoteDescSigState}`}
+          />
+          <DiagRow
+            n="3" label="Answer Created"
+            yes={answerCreated} ts={answerCreatedTs}
+          />
+          <DiagRow
+            n="4" label="Answer Sent"
+            yes={answerSent} ts={answerSentTs}
+          />
+          <View style={styles.diagBox}>
+            <Text style={styles.diagNum}>5</Text>
+            <View style={styles.diagBody}>
+              <Text style={styles.diagLabel}>ICE Candidates</Text>
+              <Text style={styles.diagLine}>Received: <Text style={styles.diagVal}>{iceCandidatesReceived}</Text></Text>
+              <Text style={styles.diagLine}>Added:    <Text style={[styles.diagVal, iceCandidatesAdded > 0 ? styles.ok : styles.dim]}>{iceCandidatesAdded}</Text></Text>
+              <Text style={styles.diagLine}>Dropped:  <Text style={[styles.diagVal, iceCandidatesDropped > 0 ? styles.err : styles.dim]}>{iceCandidatesDropped}</Text></Text>
+              <Text style={styles.diagLine}>ICE State: <Text style={styles.diagVal}>{iceState}</Text></Text>
+            </View>
+          </View>
+
           {/* Status section */}
           <Text style={styles.section}>الحالة</Text>
           <Row label="الكاميرا"          value={cameraStatus}  color={mediaColor(cameraStatus)} />
@@ -266,6 +315,16 @@ const styles = StyleSheet.create({
   logBox:        { backgroundColor: '#020617', borderRadius: 6, padding: 8, maxHeight: 320, marginBottom: 8 },
   logLine:       { color: '#64748b', fontSize: 10, fontFamily: 'monospace', lineHeight: 15 },
   actions:       { marginTop: 12, gap: 10 },
+  diagBox:       { flexDirection: 'row', backgroundColor: '#0f1f3d', borderRadius: 6, padding: 10, marginBottom: 6 },
+  diagNum:       { color: '#3b82f6', fontSize: 18, fontWeight: '700', width: 24, marginRight: 10, lineHeight: 22 },
+  diagBody:      { flex: 1 },
+  diagLabel:     { color: '#cbd5e1', fontSize: 13, fontWeight: '600', marginBottom: 2 },
+  diagYN:        { fontSize: 20, fontWeight: '800', marginBottom: 2 },
+  diagLine:      { color: '#94a3b8', fontSize: 12, fontFamily: 'monospace' },
+  diagVal:       { color: '#e2e8f0', fontWeight: '600' },
+  ok:            { color: '#22c55e' },
+  err:           { color: '#ef4444' },
+  dim:           { color: '#475569' },
   btn:           { paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   btnExport:     { backgroundColor: '#1d4ed8' },
   btnClear:      { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#475569' },

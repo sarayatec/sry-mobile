@@ -20,6 +20,20 @@ interface DebugState {
   sessionId: string;
   currentException: string | null;
   logs: string[];
+
+  // Session diagnostics — reset each time an offer arrives
+  offerReceived: boolean;
+  offerTs: string;
+  remoteDescApplied: boolean;
+  remoteDescTs: string;
+  remoteDescSigState: string;
+  answerCreated: boolean;
+  answerCreatedTs: string;
+  answerSent: boolean;
+  answerSentTs: string;
+  iceCandidatesReceived: number;
+  iceCandidatesAdded: number;
+  iceCandidatesDropped: number;
 }
 
 interface DebugActions {
@@ -35,6 +49,14 @@ interface DebugActions {
   setSessionId(id: string): void;
   setException(err: string | null): void;
   clearLogs(): void;
+
+  // Session diagnostics
+  resetSessionDiag(): void;
+  setOfferReceived(ts: string): void;
+  setRemoteDescApplied(ts: string, sigState: string): void;
+  setAnswerCreated(ts: string): void;
+  setAnswerSent(ts: string): void;
+  setIceCounts(received: number, added: number, dropped: number): void;
 }
 
 export const useDebugStore = create<DebugState & DebugActions>((set) => ({
@@ -50,6 +72,19 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
   sessionId: 'none',
   currentException: null,
   logs: [],
+
+  offerReceived: false,
+  offerTs: '--',
+  remoteDescApplied: false,
+  remoteDescTs: '--',
+  remoteDescSigState: '--',
+  answerCreated: false,
+  answerCreatedTs: '--',
+  answerSent: false,
+  answerSentTs: '--',
+  iceCandidatesReceived: 0,
+  iceCandidatesAdded: 0,
+  iceCandidatesDropped: 0,
 
   addLog: (line) => set((s) => ({
     logs: s.logs.length >= MAX_LINES
@@ -67,4 +102,21 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
   setSessionId: (sessionId) => set({ sessionId }),
   setException: (currentException) => set({ currentException }),
   clearLogs: () => set({ logs: [] }),
+
+  resetSessionDiag: () => set({
+    offerReceived: false, offerTs: '--',
+    remoteDescApplied: false, remoteDescTs: '--', remoteDescSigState: '--',
+    answerCreated: false, answerCreatedTs: '--',
+    answerSent: false, answerSentTs: '--',
+    iceCandidatesReceived: 0, iceCandidatesAdded: 0, iceCandidatesDropped: 0,
+  }),
+  setOfferReceived:     (ts) => set({ offerReceived: true, offerTs: ts }),
+  setRemoteDescApplied: (ts, sigState) => set({ remoteDescApplied: true, remoteDescTs: ts, remoteDescSigState: sigState }),
+  setAnswerCreated:     (ts) => set({ answerCreated: true, answerCreatedTs: ts }),
+  setAnswerSent:        (ts) => set({ answerSent: true, answerSentTs: ts }),
+  setIceCounts: (received, added, dropped) => set({
+    iceCandidatesReceived: received,
+    iceCandidatesAdded: added,
+    iceCandidatesDropped: dropped,
+  }),
 }));
