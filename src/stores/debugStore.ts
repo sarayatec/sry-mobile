@@ -34,6 +34,8 @@ interface DebugState {
   iceCandidatesReceived: number;
   iceCandidatesAdded: number;
   iceCandidatesDropped: number;
+  iceCandidatesQueued: number;
+  pendingQueueSize: number;
 }
 
 interface DebugActions {
@@ -56,7 +58,7 @@ interface DebugActions {
   setRemoteDescApplied(ts: string, sigState: string): void;
   setAnswerCreated(ts: string): void;
   setAnswerSent(ts: string): void;
-  setIceCounts(received: number, added: number, dropped: number): void;
+  setIceCounts(received: number, added: number, dropped: number, pending?: number): void;
 }
 
 export const useDebugStore = create<DebugState & DebugActions>((set) => ({
@@ -85,6 +87,8 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
   iceCandidatesReceived: 0,
   iceCandidatesAdded: 0,
   iceCandidatesDropped: 0,
+  iceCandidatesQueued: 0,
+  pendingQueueSize: 0,
 
   addLog: (line) => set((s) => ({
     logs: s.logs.length >= MAX_LINES
@@ -109,14 +113,17 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
     answerCreated: false, answerCreatedTs: '--',
     answerSent: false, answerSentTs: '--',
     iceCandidatesReceived: 0, iceCandidatesAdded: 0, iceCandidatesDropped: 0,
+    iceCandidatesQueued: 0, pendingQueueSize: 0,
   }),
   setOfferReceived:     (ts) => set({ offerReceived: true, offerTs: ts }),
   setRemoteDescApplied: (ts, sigState) => set({ remoteDescApplied: true, remoteDescTs: ts, remoteDescSigState: sigState }),
   setAnswerCreated:     (ts) => set({ answerCreated: true, answerCreatedTs: ts }),
   setAnswerSent:        (ts) => set({ answerSent: true, answerSentTs: ts }),
-  setIceCounts: (received, added, dropped) => set({
+  setIceCounts: (received, added, dropped, pending = 0) => set((s) => ({
     iceCandidatesReceived: received,
     iceCandidatesAdded: added,
     iceCandidatesDropped: dropped,
-  }),
+    iceCandidatesQueued: received - added,
+    pendingQueueSize: pending,
+  })),
 }));

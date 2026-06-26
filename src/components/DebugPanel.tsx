@@ -99,6 +99,7 @@ export default function DebugPanel({ visible, onClose }: Props) {
     answerCreated, answerCreatedTs,
     answerSent, answerSentTs,
     iceCandidatesReceived, iceCandidatesAdded, iceCandidatesDropped,
+    iceCandidatesQueued, pendingQueueSize,
   } = useDebugStore();
 
   const handleExport = useCallback(async () => {
@@ -219,10 +220,11 @@ export default function DebugPanel({ visible, onClose }: Props) {
             <Text style={styles.diagNum}>5</Text>
             <View style={styles.diagBody}>
               <Text style={styles.diagLabel}>ICE Candidates</Text>
-              <Text style={styles.diagLine}>Received: <Text style={styles.diagVal}>{iceCandidatesReceived}</Text></Text>
-              <Text style={styles.diagLine}>Added:    <Text style={[styles.diagVal, iceCandidatesAdded > 0 ? styles.ok : styles.dim]}>{iceCandidatesAdded}</Text></Text>
-              <Text style={styles.diagLine}>Dropped:  <Text style={[styles.diagVal, iceCandidatesDropped > 0 ? styles.err : styles.dim]}>{iceCandidatesDropped}</Text></Text>
-              <Text style={styles.diagLine}>ICE State: <Text style={styles.diagVal}>{iceState}</Text></Text>
+              <Text style={styles.diagLine}>Received:    <Text style={styles.diagVal}>{iceCandidatesReceived}</Text></Text>
+              <Text style={styles.diagLine}>Queued:      <Text style={[styles.diagVal, iceCandidatesQueued > 0 ? styles.ok : styles.dim]}>{iceCandidatesQueued}</Text></Text>
+              <Text style={styles.diagLine}>Added:       <Text style={[styles.diagVal, iceCandidatesAdded > 0 ? styles.ok : styles.dim]}>{iceCandidatesAdded}</Text></Text>
+              <Text style={styles.diagLine}>Pending Now: <Text style={[styles.diagVal, pendingQueueSize > 0 ? styles.warn : styles.dim]}>{pendingQueueSize}</Text></Text>
+              <Text style={styles.diagLine}>ICE State:   <Text style={[styles.diagVal, { color: statusColor(iceColor(iceState)) }]}>{iceState}</Text></Text>
             </View>
           </View>
 
@@ -324,6 +326,7 @@ const styles = StyleSheet.create({
   diagVal:       { color: '#e2e8f0', fontWeight: '600' },
   ok:            { color: '#22c55e' },
   err:           { color: '#ef4444' },
+  warn:          { color: '#f59e0b' },
   dim:           { color: '#475569' },
   btn:           { paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   btnExport:     { backgroundColor: '#1d4ed8' },

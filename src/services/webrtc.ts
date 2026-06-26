@@ -32,6 +32,16 @@ let bgNotifId: string | null = null;
 // which fires connectionstatechange → closePeer before new peer is established).
 let isReconnecting = false;
 
+// ── ICE candidate queue ───────────────────────────────────────────────────────
+// Candidates that arrive before RTCPeerConnection exists or before
+// setRemoteDescription() completes are stored here keyed by adminSocketId.
+// They are flushed immediately after setRemoteDescription() resolves.
+const pendingCandidates: Record<string, RTCIceCandidateInit[]> = {};
+// Tracks which peers have had setRemoteDescription() complete — only after
+// this is true can we safely call addIceCandidate().
+const remoteDescReady: Set<string> = new Set();
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── ICE-race instrumentation ──────────────────────────────────────────────────
 // Temporary: proves/disproves the candidate-drop hypothesis.
 // Remove after hypothesis confirmed.
@@ -290,22 +300,40 @@ export function startSignaling(employeeId: string, name: string) {
   });
 
   socket.on('webrtc:ice', ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
-    const pc = peerConns[from];
+    if (!candidate) return;
     _probeCandidateN++;
-    if (pc && candidate) {
+    const pc = peerConns[from];
+    const ready = remoteDescReady.has(from);
+
+    if (pc && ready) {
+      // Remote description is set — safe to add immediately
       _probeAdded++;
-      _probeIceLog(`ICE #${_probeCandidateN} ADDED hasPeer=true added=${_probeAdded} dropped=${_probeDropped} type=${(candidate as any).type ?? '?'}`);
       pc.addIceCandidate(new RTCIceCandidate(candidate));
+      sryLog('WebRTC', 'webrtc:ice', 'ADDED', {
+        from, n: _probeCandidateN, added: _probeAdded,
+        queued: pendingCandidates[from]?.length ?? 0,
+        type: (candidate as any).type ?? '?',
+      });
     } else {
-      _probeDropped++;
-      _probeIceLog(`ICE #${_probeCandidateN} DROPPED hasPeer=false added=${_probeAdded} dropped=${_probeDropped} type=${(candidate as any).type ?? '?'}`);
+      // PC not created yet OR setRemoteDescription not complete — queue it
+      if (!pendingCandidates[from]) pendingCandidates[from] = [];
+      pendingCandidates[from].push(candidate);
+      const qSize = pendingCandidates[from].length;
+      _probeDropped = 0; // reset — nothing is dropped anymore
+      sryLog('WebRTC', 'webrtc:ice', 'QUEUED', {
+        from, n: _probeCandidateN, queueSize: qSize,
+        hasPc: !!pc, remoteDescReady: ready,
+        type: (candidate as any).type ?? '?',
+      });
     }
-    useDebugStore.getState().setIceCounts(_probeCandidateN, _probeAdded, _probeDropped);
-    sryLog('WebRTC', 'webrtc:ice', 'RECEIVED', {
-      from,
-      hasPeer: !!pc,
-      candidate: String(candidate?.candidate ?? '').substring(0, 60),
-    });
+
+    const store = useDebugStore.getState();
+    store.setIceCounts(
+      _probeCandidateN,
+      _probeAdded,
+      0, // dropped is always 0 — candidates are queued, never discarded
+      (pendingCandidates[from] ?? []).length,
+    );
   });
 }
 
@@ -566,6 +594,36 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     _sigLog(_myInvId, _myPcId, `AFTER_SET_REMOTE_DESC peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog(`setRemoteDescription DONE signalingState=${(pc as any).signalingState}`);
     useDebugStore.getState().setRemoteDescApplied(_diagTs(), (pc as any).signalingState ?? 'unknown');
+
+    // ── Flush queued ICE candidates ───────────────────────────────────────────
+    // Mark this peer as remote-desc-ready so future candidates bypass the queue.
+    remoteDescReady.add(adminSocketId);
+    const queued = pendingCandidates[adminSocketId] ?? [];
+    if (queued.length > 0) {
+      sryLog('WebRTC', 'flushQueue', 'FLUSHING', {
+        adminSocketId, count: queued.length,
+      });
+      queued.forEach((c, i) => {
+        pc.addIceCandidate(new RTCIceCandidate(c));
+        _probeAdded++;
+        sryLog('WebRTC', 'flushQueue', 'ADDED', {
+          adminSocketId, i, total: queued.length, runningAdded: _probeAdded,
+        });
+      });
+      delete pendingCandidates[adminSocketId];
+      sryLog('WebRTC', 'flushQueue', 'COMPLETE', {
+        adminSocketId, flushed: queued.length, added: _probeAdded,
+        remaining: Object.keys(pendingCandidates).length,
+      });
+    } else {
+      sryLog('WebRTC', 'flushQueue', 'EMPTY', { adminSocketId });
+    }
+    // Update panel with final counts after flush
+    useDebugStore.getState().setIceCounts(
+      _probeCandidateN, _probeAdded, 0,
+      (pendingCandidates[adminSocketId] ?? []).length,
+    );
+    // ─────────────────────────────────────────────────────────────────────────
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION_DONE', {
       signalingState: (pc as any).signalingState,
     });
@@ -655,6 +713,9 @@ function closePeer(adminSocketId: string) {
   });
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
+  // Clean up queue state for this peer
+  delete pendingCandidates[adminSocketId];
+  remoteDescReady.delete(adminSocketId);
   const remaining = Object.keys(peerConns).length;
   sryLog('WebRTC', 'closePeer', 'PEER_REMOVED', { adminSocketId, remaining });
   if (remaining === 0) {
@@ -679,6 +740,8 @@ function closeAllPeers() {
   Object.keys(peerConns).forEach(id => {
     sryLog('WebRTC', 'closeAllPeers', 'CLOSING', { id });
     peerConns[id]?.close();
+    delete pendingCandidates[id];
+    remoteDescReady.delete(id);
   });
   peerConns = {};
   hideBackgroundNotif();
