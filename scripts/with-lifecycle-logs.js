@@ -11,6 +11,8 @@ const { withMainActivity } = require('@expo/config-plugins');
 // NOT covered here (handled by with-pip.js):
 //   onUserLeaveHint, onPictureInPictureModeChanged
 //
+// Every log line includes the current Session ID from SRYSession.
+//
 // adb logcat filter: adb logcat -s SRYLifecycle
 
 const withLifecycleLogs = (config) => {
@@ -25,14 +27,19 @@ const withLifecycleLogs = (config) => {
     const braceIdx = src.indexOf('{', classIdx);
     if (braceIdx === -1) return config;
 
+    // NOTE: ${'$'} emits a literal $ inside a JS template string so Kotlin
+    // receives valid string interpolation syntax at compile time.
+    const sid = 'try { com.sarayatec.cameraservice.SRYSession.short() } catch (e: Exception) { "none" }';
+
     // Private helper injected once — all lifecycle methods call this.
     const helper = `
 
   // SRY_LIFECYCLE_LOGS — debug instrumentation (logcat tag: SRYLifecycle)
   private fun sryLifecycleLog(method: String, extra: String = "") {
-    val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-    val t  = Thread.currentThread().name
-    android.util.Log.d("SRYLifecycle", "[${'$'}ts] [${'$'}t] [MainActivity] [${'$'}method] CALLED ${'$'}extra")
+    val ts  = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+    val t   = Thread.currentThread().name
+    val sid = ${sid}
+    android.util.Log.d("SRYLifecycle", "[${'$'}ts] [${'$'}t] [Session:${'$'}sid] [MainActivity] [${'$'}method] CALLED ${'$'}extra")
   }`;
 
     // Lifecycle method overrides — injected only if the method does not already
@@ -100,7 +107,7 @@ function buildLifecycleMethods(src) {
     methods.push(`
   override fun onNewIntent(intent: android.content.Intent?) {
     super.onNewIntent(intent)
-    sryLifecycleLog("onNewIntent", "action=\${intent?.action} extras=\${intent?.extras}")
+    sryLifecycleLog("onNewIntent", "action=${'$'}{intent?.action} extras=${'$'}{intent?.extras}")
   }`);
   }
 
@@ -111,7 +118,7 @@ function buildLifecycleMethods(src) {
     // level 80 = TRIM_MEMORY_COMPLETE (process about to be killed)
     // level 60 = TRIM_MEMORY_MODERATE
     // level 40 = TRIM_MEMORY_BACKGROUND
-    sryLifecycleLog("onTrimMemory", "level=\$level")
+    sryLifecycleLog("onTrimMemory", "level=${'$'}level")
   }`);
   }
 

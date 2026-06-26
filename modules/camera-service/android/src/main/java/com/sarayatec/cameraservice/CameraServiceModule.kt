@@ -16,9 +16,10 @@ private const val KEY   = "camera_active"
 private const val TAG   = "SRYModule"
 
 private fun modLog(method: String, state: String, extra: String = "") {
-  val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-  val t  = Thread.currentThread().name
-  Log.d(TAG, "[$ts] [$t] [CameraServiceModule] [$method] $state $extra")
+  val ts  = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+  val t   = Thread.currentThread().name
+  val sid = SRYSession.short()
+  Log.d(TAG, "[$ts] [$t] [Session:$sid] [CameraServiceModule] [$method] $state $extra")
 }
 
 class CameraServiceModule : Module() {
@@ -79,6 +80,21 @@ class CameraServiceModule : Module() {
       if (active) {
         modLog("setStreaming", "ENSURING_SERVICE_RUNNING", "")
         launchService(ctx)
+      }
+    }
+
+    // Receives the current streaming session UUID from JS (webrtc.ts).
+    // Stores it in SRYSession so all Android-side log calls include the same ID.
+    Function("setSessionId") { sessionId: String ->
+      val prev = SRYSession.sessionId
+      SRYSession.sessionId = sessionId
+      if (sessionId == "none") {
+        val elapsed = SRYSession.elapsedMs()
+        SRYSession.startMs = 0L
+        modLog("setSessionId", "SESSION_CLEARED", "prev=${prev.take(8)} elapsedMs=$elapsed")
+      } else {
+        SRYSession.startMs = System.currentTimeMillis()
+        modLog("setSessionId", "SESSION_SET", "sessionId=${sessionId.take(8)} full=$sessionId")
       }
     }
 

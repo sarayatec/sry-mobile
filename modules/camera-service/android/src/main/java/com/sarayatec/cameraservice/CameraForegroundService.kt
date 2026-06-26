@@ -18,9 +18,10 @@ class CameraForegroundService : Service() {
     private const val TAG = "SRYService"
 
     private fun srvLog(method: String, state: String, extra: String = "") {
-      val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-      val t  = Thread.currentThread().name
-      Log.d(TAG, "[$ts] [$t] [CameraForegroundService] [$method] $state $extra")
+      val ts  = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+      val t   = Thread.currentThread().name
+      val sid = SRYSession.short()
+      Log.d(TAG, "[$ts] [$t] [Session:$sid] [CameraForegroundService] [$method] $state $extra")
     }
   }
 
@@ -79,7 +80,8 @@ class CameraForegroundService : Service() {
         // 4-hour safety cap — service is stopped explicitly when streaming ends
         acquire(4 * 60 * 60 * 1000L)
       }
-      srvLog("onStartCommand", "WAKELOCK_ACQUIRED", "tag=SRYField::CameraStreamLock capMs=${4*60*60*1000L}")
+      srvLog("onStartCommand", "WAKELOCK_ACQUIRED",
+        "tag=SRYField::CameraStreamLock capMs=${4*60*60*1000L} sessionId=${SRYSession.sessionId}")
     } else {
       srvLog("onStartCommand", "WAKELOCK_ALREADY_HELD", "isHeld=${wakeLock?.isHeld}")
     }
@@ -89,7 +91,8 @@ class CameraForegroundService : Service() {
   }
 
   override fun onDestroy() {
-    srvLog("onDestroy", "CALLED", "wakeLockHeld=${wakeLock?.isHeld}")
+    srvLog("onDestroy", "CALLED",
+      "wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId} elapsedMs=${SRYSession.elapsedMs()}")
     wakeLock?.let {
       if (it.isHeld) {
         it.release()

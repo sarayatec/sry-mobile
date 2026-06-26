@@ -32,6 +32,13 @@ export function keepScreenOn(active: boolean): void {
   try { mod?.keepScreenOn(active); } catch {}
 }
 
+// Propagates the current streaming session UUID to the Android layer so all
+// Kotlin log calls (CameraForegroundService, MainActivity lifecycle, etc.)
+// include the same session ID as the JS logs.
+export function setNativeSessionId(sessionId: string): void {
+  try { mod?.setSessionId(sessionId); } catch {}
+}
+
 export function isBatteryOptimizationIgnored(): boolean {
   try { return !!mod?.isBatteryOptimizationIgnored(); } catch { return false; }
 }

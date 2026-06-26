@@ -23,13 +23,21 @@ const withPiP = (config) => {
     const braceIdx = src.indexOf('{', classIdx);
     if (braceIdx === -1) return config;
 
+    // NOTE: Inside a JS template string, use ${'$'} to emit a literal $ that
+    // Kotlin will then interpolate at runtime.
+    const sid  = "com.sarayatec.cameraservice.SRYSession.short()";
+    const ts   = "java.text.SimpleDateFormat(\"HH:mm:ss.SSS\", java.util.Locale.US).format(java.util.Date())";
+    const thr  = "Thread.currentThread().name";
+
     const methods = `
 
   // Enter PiP when the user presses Home while streaming (Android 8+)
   override fun onUserLeaveHint() {
     super.onUserLeaveHint()
-    val _ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-    android.util.Log.d("SRYLifecycle", "[$_ts] [${Thread.currentThread().name}] [MainActivity] [onUserLeaveHint] CALLED")
+    val _ts  = ${ts}
+    val _t   = ${thr}
+    val _sid = try { ${sid} } catch (e: Exception) { "none" }
+    android.util.Log.d("SRYLifecycle", "[${'$'}_ts] [${'$'}_t] [Session:${'$'}_sid] [MainActivity] [onUserLeaveHint] CALLED")
     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
       try {
         enterPictureInPictureMode(
@@ -37,12 +45,12 @@ const withPiP = (config) => {
             .setAspectRatio(android.util.Rational(16, 9))
             .build()
         )
-        android.util.Log.d("SRYLifecycle", "[$_ts] [${Thread.currentThread().name}] [MainActivity] [onUserLeaveHint] PIP_ENTER_SUCCESS")
+        android.util.Log.d("SRYLifecycle", "[${'$'}_ts] [${'$'}_t] [Session:${'$'}_sid] [MainActivity] [onUserLeaveHint] PIP_ENTER_SUCCESS")
       } catch (e: Exception) {
-        android.util.Log.d("SRYLifecycle", "[$_ts] [${Thread.currentThread().name}] [MainActivity] [onUserLeaveHint] PIP_ENTER_FAILED err=\${e.message}")
+        android.util.Log.d("SRYLifecycle", "[${'$'}_ts] [${'$'}_t] [Session:${'$'}_sid] [MainActivity] [onUserLeaveHint] PIP_ENTER_FAILED err=${'$'}{e.message}")
       }
     } else {
-      android.util.Log.d("SRYLifecycle", "[$_ts] [${Thread.currentThread().name}] [MainActivity] [onUserLeaveHint] PIP_SKIPPED_OLD_API sdk=\${android.os.Build.VERSION.SDK_INT}")
+      android.util.Log.d("SRYLifecycle", "[${'$'}_ts] [${'$'}_t] [Session:${'$'}_sid] [MainActivity] [onUserLeaveHint] PIP_SKIPPED_OLD_API sdk=${'$'}{android.os.Build.VERSION.SDK_INT}")
     }
   }
 
@@ -52,15 +60,17 @@ const withPiP = (config) => {
     newConfig: android.content.res.Configuration
   ) {
     super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
-    val _ts2 = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
-    android.util.Log.d("SRYLifecycle", "[$_ts2] [${Thread.currentThread().name}] [MainActivity] [onPictureInPictureModeChanged] CALLED isInPiP=\$isInPictureInPictureMode")
+    val _ts2  = ${ts}
+    val _t2   = ${thr}
+    val _sid2 = try { ${sid} } catch (e: Exception) { "none" }
+    android.util.Log.d("SRYLifecycle", "[${'$'}_ts2] [${'$'}_t2] [Session:${'$'}_sid2] [MainActivity] [onPictureInPictureModeChanged] CALLED isInPiP=${'$'}isInPictureInPictureMode")
     if (!isInPictureInPictureMode) {
       // Bring activity to front so React Native receives AppState 'active'
       val intent = android.content.Intent(this, this::class.java).apply {
         flags = android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
       }
       startActivity(intent)
-      android.util.Log.d("SRYLifecycle", "[$_ts2] [${Thread.currentThread().name}] [MainActivity] [onPictureInPictureModeChanged] REORDER_TO_FRONT")
+      android.util.Log.d("SRYLifecycle", "[${'$'}_ts2] [${'$'}_t2] [Session:${'$'}_sid2] [MainActivity] [onPictureInPictureModeChanged] REORDER_TO_FRONT")
     }
   }`;
 

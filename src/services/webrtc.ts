@@ -1,7 +1,7 @@
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { enterPiP, setAutoEnterPiP } from '../../modules/pip';
-import { startSessionService, stopSessionService, setStreaming } from '../../modules/camera-service';
+import { startSessionService, stopSessionService, setStreaming, setNativeSessionId } from '../../modules/camera-service';
 import {
   mediaDevices,
   RTCPeerConnection,
@@ -10,7 +10,7 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
-import { sryLog } from '../utils/log';
+import { sryLog, setLogSessionId } from '../utils/log';
 
 const SIGNAL_URL = 'https://sry.sarayatec.com';
 const ICE_SERVERS = [
@@ -29,6 +29,49 @@ let bgNotifId: string | null = null;
 // Guard: prevents releaseStream() during peer reconnect (handleOffer closes old peer
 // which fires connectionstatechange → closePeer before new peer is established).
 let isReconnecting = false;
+
+// ─── Session tracking ─────────────────────────────────────────────────────────
+let currentSessionId  = 'none';
+let sessionStartTime  = 0;       // Date.now() at session start
+
+function generateSessionId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function startSession(reason: string, adminSocketId: string) {
+  currentSessionId = generateSessionId();
+  sessionStartTime = Date.now();
+  setLogSessionId(currentSessionId);
+  setNativeSessionId(currentSessionId);
+  sryLog('Session', 'startSession', 'SESSION_STARTED', {
+    sessionId: currentSessionId,
+    reason,
+    adminSocketId,
+  });
+}
+
+function endSession(reason: string, extra?: Record<string, unknown>) {
+  const durationSec = sessionStartTime > 0 ? Math.round((Date.now() - sessionStartTime) / 1000) : 0;
+  sryLog('Session', 'endSession', 'SESSION_FINISHED', {
+    sessionId: currentSessionId,
+    durationSec,
+    reason,
+    streamAlive: !!localStream,
+    streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    activePeers: Object.keys(peerConns).length,
+    socketConnected: socket?.connected ?? false,
+    ...extra,
+  });
+  currentSessionId = 'none';
+  sessionStartTime = 0;
+  setLogSessionId('none');
+  setNativeSessionId('none');
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function showBackgroundNotif() {
   if (bgNotifId) return;
@@ -199,6 +242,15 @@ export function stopSignaling() {
     peerCount: Object.keys(peerConns).length,
     hasStream: !!localStream,
   });
+
+  // End the current session before tearing everything down
+  if (currentSessionId !== 'none') {
+    endSession('logout', {
+      resourcesReleased: 'socket peers stream service',
+      resourcesKept: 'none',
+    });
+  }
+
   appStateSubscription?.remove();
   appStateSubscription = null;
   hideBackgroundNotif();
@@ -280,6 +332,19 @@ function releaseStream() {
 }
 
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
+  // ── Session management ──────────────────────────────────────────────────────
+  if (peerConns[adminSocketId]) {
+    // Existing session ending — a new offer is replacing it
+    endSession('new_offer_replacing', {
+      adminSocketId,
+      resourcesReleased: 'peer',
+      resourcesKept: 'stream socket service',
+    });
+  }
+  // Each offer (new or replacement) starts a fresh session
+  startSession('offer_received', adminSocketId);
+  // ────────────────────────────────────────────────────────────────────────────
+
   sryLog('WebRTC', 'handleOffer', 'ENTRY', {
     adminSocketId,
     offerType: offer.type,
