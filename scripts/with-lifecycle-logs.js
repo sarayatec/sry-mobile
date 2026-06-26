@@ -29,7 +29,7 @@ const withLifecycleLogs = (config) => {
 
     // NOTE: ${'$'} emits a literal $ inside a JS template string so Kotlin
     // receives valid string interpolation syntax at compile time.
-    const sid = 'try { com.sarayatec.cameraservice.SRYSession.short() } catch (e: Exception) { "none" }';
+    const sid = '"none"';
 
     // Private helper injected once — all lifecycle methods call this.
     const helper = `
@@ -58,7 +58,7 @@ function buildLifecycleMethods(src) {
   if (!src.includes('override fun onCreate')) {
     methods.push(`
   override fun onCreate(savedInstanceState: android.os.Bundle?) {
-    super.onCreate(savedInstanceState)
+    super.onCreate(null)
     sryLifecycleLog("onCreate")
   }`);
   }
