@@ -10,6 +10,7 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
+import { sryLog } from '../utils/log';
 
 const SIGNAL_URL = 'https://sry.sarayatec.com';
 const ICE_SERVERS = [
@@ -38,85 +39,166 @@ async function showBackgroundNotif() {
       trigger: null,
     });
     bgNotifId = id;
-  } catch {}
+    sryLog('Notif', 'showBackgroundNotif', 'SHOWN', { notifId: id });
+  } catch (err) {
+    sryLog('Notif', 'showBackgroundNotif', 'ERROR', { err: String(err) });
+  }
 }
 
 async function hideBackgroundNotif() {
   if (!bgNotifId) return;
   try { await Notifications.dismissNotificationAsync(bgNotifId); } catch {}
+  sryLog('Notif', 'hideBackgroundNotif', 'DISMISSED', { notifId: bgNotifId });
   bgNotifId = null;
 }
 
 async function onAppStateChange(state: AppStateStatus) {
+  const peerCount = Object.keys(peerConns).length;
+  sryLog('AppState', 'onAppStateChange', state.toUpperCase(), {
+    peerCount,
+    hasStream: !!localStream,
+    streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    socketConnected: socket?.connected ?? false,
+  });
+
   // With Camera1 forced (see scripts/patch-webrtc-camera1.js) + camera-type
   // foreground service + WakeLock, capture continues with screen off and in
   // the background. So we DO NOT tear down the connection — we keep it alive.
   if (state === 'background' || state === 'inactive') {
-    if (Object.keys(peerConns).length > 0) {
+    if (peerCount > 0) {
+      sryLog('AppState', 'onAppStateChange', 'SHOW_BACKGROUND_NOTIF', { peerCount });
       await showBackgroundNotif();
       localStream?.getTracks().forEach(t => { t.enabled = true; });
+      sryLog('AppState', 'onAppStateChange', 'TRACKS_ENABLED', {
+        videoTracks: localStream?.getVideoTracks().length ?? 0,
+        audioTracks: localStream?.getAudioTracks().length ?? 0,
+      });
       if (Platform.OS === 'android') {
-        setTimeout(() => enterPiP(), 150);
+        sryLog('AppState', 'onAppStateChange', 'ENTER_PIP_SCHEDULED', {});
+        setTimeout(() => {
+          sryLog('AppState', 'onAppStateChange', 'ENTER_PIP_FIRING', {});
+          enterPiP();
+        }, 150);
       }
+    } else {
+      sryLog('AppState', 'onAppStateChange', 'NO_PEERS_BACKGROUND', {});
     }
     // No releaseStream() — stream stays alive for next offer even with no peers.
   } else if (state === 'active') {
     hideBackgroundNotif();
-    if (Platform.OS === 'android' && Object.keys(peerConns).length > 0) {
+    if (Platform.OS === 'android' && peerCount > 0) {
       // Re-enable tracks in case Android disabled them; do NOT close the peer.
       localStream?.getTracks().forEach(t => { t.enabled = true; });
-    } else if (Platform.OS === 'android' && Object.keys(peerConns).length === 0 && socket?.connected) {
+      sryLog('AppState', 'onAppStateChange', 'TRACKS_RE_ENABLED_ACTIVE', { peerCount });
+    } else if (Platform.OS === 'android' && peerCount === 0 && socket?.connected) {
       // Returned to foreground with no active stream — ask admin to re-offer.
+      sryLog('AppState', 'onAppStateChange', 'EMIT_READY_FOR_STREAM', {});
       socket.emit('employee:ready-for-stream');
     }
   }
 }
 
 export function startSignaling(employeeId: string, name: string) {
-  if (socket?.connected) return;
+  sryLog('Socket', 'startSignaling', 'CALLED', { employeeId, name });
+
+  if (socket?.connected) {
+    sryLog('Socket', 'startSignaling', 'ALREADY_CONNECTED', { socketId: socket.id });
+    return;
+  }
 
   // Start a persistent foreground service for the WHOLE session so the OS
   // (Samsung/Xiaomi) cannot kill the process when another app is opened or the
   // screen turns off. Without this, the socket disconnects and the employee
   // disappears from the admin dashboard.
-  if (Platform.OS === 'android') startSessionService();
+  if (Platform.OS === 'android') {
+    sryLog('Service', 'startSignaling', 'STARTING_SESSION_SERVICE', {});
+    startSessionService();
+  }
 
   appStateSubscription = AppState.addEventListener('change', onAppStateChange);
+  sryLog('AppState', 'startSignaling', 'APPSTATE_LISTENER_REGISTERED', {});
 
   socket = io(SIGNAL_URL, {
     transports: ['websocket'],
     reconnection: true,
     reconnectionDelay: 3000,
   });
+  sryLog('Socket', 'startSignaling', 'IO_CREATED', { url: SIGNAL_URL });
 
   socket.on('connect', () => {
+    sryLog('Socket', 'connect', 'CONNECTED', { socketId: socket?.id });
     socket!.emit('employee:register', { employeeId, name });
+    sryLog('Socket', 'connect', 'REGISTERED', { employeeId, name });
   });
 
-  socket.on('stream:start', () => { /* intentionally empty */ });
+  socket.on('disconnect', (reason) => {
+    sryLog('Socket', 'disconnect', 'DISCONNECTED', {
+      reason,
+      peerCount: Object.keys(peerConns).length,
+    });
+    closeAllPeers();
+  });
+
+  socket.on('reconnect_attempt', (attempt: number) => {
+    sryLog('Socket', 'reconnect_attempt', 'TRYING', { attempt });
+  });
+
+  socket.on('reconnect', (attempt: number) => {
+    sryLog('Socket', 'reconnect', 'SUCCESS', { attempt, socketId: socket?.id });
+  });
+
+  socket.on('reconnect_error', (err: Error) => {
+    sryLog('Socket', 'reconnect_error', 'FAILED', { err: err.message });
+  });
+
+  socket.on('reconnect_failed', () => {
+    sryLog('Socket', 'reconnect_failed', 'EXHAUSTED', {});
+  });
+
+  socket.on('stream:start', () => {
+    sryLog('Socket', 'stream:start', 'RECEIVED', {});
+    /* intentionally empty */
+  });
 
   socket.on('stream:stop', ({ adminSocketId }: { adminSocketId?: string }) => {
+    sryLog('Socket', 'stream:stop', 'RECEIVED', {
+      adminSocketId: adminSocketId ?? 'ALL',
+      peerCount: Object.keys(peerConns).length,
+    });
     if (adminSocketId) closePeer(adminSocketId);
     else closeAllPeers();
   });
 
   socket.on('camera:flip', ({ facingMode }: { facingMode: 'environment' | 'user' }) => {
+    sryLog('Socket', 'camera:flip', 'RECEIVED', { facingMode });
     switchCamera(facingMode);
   });
 
   socket.on('webrtc:offer', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+    sryLog('WebRTC', 'webrtc:offer', 'RECEIVED', {
+      from,
+      offerType: offer.type,
+      peerExists: !!peerConns[from],
+    });
     await handleOffer(from, offer);
   });
 
   socket.on('webrtc:ice', ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
     const pc = peerConns[from];
+    sryLog('WebRTC', 'webrtc:ice', 'RECEIVED', {
+      from,
+      hasPeer: !!pc,
+      candidate: String(candidate?.candidate ?? '').substring(0, 60),
+    });
     if (pc && candidate) pc.addIceCandidate(new RTCIceCandidate(candidate));
   });
-
-  socket.on('disconnect', () => { closeAllPeers(); });
 }
 
 export function stopSignaling() {
+  sryLog('Socket', 'stopSignaling', 'CALLED', {
+    peerCount: Object.keys(peerConns).length,
+    hasStream: !!localStream,
+  });
   appStateSubscription?.remove();
   appStateSubscription = null;
   hideBackgroundNotif();
@@ -125,125 +207,304 @@ export function stopSignaling() {
   socket = null;
   releaseStream();
   // Tear down the persistent session service on logout
-  if (Platform.OS === 'android') stopSessionService();
+  if (Platform.OS === 'android') {
+    sryLog('Service', 'stopSignaling', 'STOPPING_SESSION_SERVICE', {});
+    stopSessionService();
+  }
 }
 
 function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): Promise<MediaStream> {
-  if (localStream && facingMode === currentFacingMode) return Promise.resolve(localStream);
-  if (streamPromise && facingMode === currentFacingMode) return streamPromise;
+  sryLog('Camera', 'acquireStream', 'CALLED', {
+    requestedFacing: facingMode,
+    currentFacing: currentFacingMode,
+    hasStream: !!localStream,
+    streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    hasPromise: !!streamPromise,
+  });
+
+  if (localStream && facingMode === currentFacingMode) {
+    sryLog('Camera', 'acquireStream', 'REUSED', {
+      streamId: (localStream as any).id ?? 'unknown',
+      videoTracks: localStream.getVideoTracks().length,
+      audioTracks: localStream.getAudioTracks().length,
+      videoState: localStream.getVideoTracks()[0]?.readyState ?? 'none',
+      audioState: localStream.getAudioTracks()[0]?.readyState ?? 'none',
+    });
+    return Promise.resolve(localStream);
+  }
+  if (streamPromise && facingMode === currentFacingMode) {
+    sryLog('Camera', 'acquireStream', 'AWAITING_EXISTING_PROMISE', { facingMode });
+    return streamPromise;
+  }
   releaseStream();
   currentFacingMode = facingMode;
+  sryLog('Camera', 'acquireStream', 'CALLING_GETUSERMEDIA', { facingMode, width: 640, height: 480 });
   streamPromise = (mediaDevices.getUserMedia({
     video: { facingMode, width: 640, height: 480 },
     audio: true,
   }) as Promise<MediaStream>).then(stream => {
     localStream = stream;
     streamPromise = null;
+    sryLog('Camera', 'getUserMedia', 'SUCCESS', {
+      streamId: (stream as any).id ?? 'unknown',
+      videoTracks: stream.getVideoTracks().length,
+      audioTracks: stream.getAudioTracks().length,
+      videoTrackId: stream.getVideoTracks()[0]?.id ?? 'none',
+      audioTrackId: stream.getAudioTracks()[0]?.id ?? 'none',
+      videoState: stream.getVideoTracks()[0]?.readyState ?? 'none',
+      audioState: stream.getAudioTracks()[0]?.readyState ?? 'none',
+    });
     return stream;
   }).catch(err => {
     streamPromise = null;
+    sryLog('Camera', 'getUserMedia', 'ERROR', { err: String(err), name: (err as any)?.name });
     throw err;
   });
   return streamPromise;
 }
 
 function releaseStream() {
-  localStream?.getTracks().forEach(t => t.stop());
+  if (localStream) {
+    const tracks = localStream.getTracks();
+    sryLog('Camera', 'releaseStream', 'CALLED', {
+      streamId: (localStream as any).id ?? 'unknown',
+      trackCount: tracks.length,
+      states: tracks.map(t => `${t.kind}:${t.readyState}`).join(','),
+    });
+    tracks.forEach(t => t.stop());
+  } else {
+    sryLog('Camera', 'releaseStream', 'CALLED_NO_STREAM', {});
+  }
   localStream = null;
   streamPromise = null;
 }
 
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
+  sryLog('WebRTC', 'handleOffer', 'ENTRY', {
+    adminSocketId,
+    offerType: offer.type,
+    hasExistingPeer: !!peerConns[adminSocketId],
+    totalPeers: Object.keys(peerConns).length,
+    isReconnecting,
+  });
+
   try {
     if (peerConns[adminSocketId]) {
       // Set guard BEFORE close() so the connectionstatechange event that fires
       // synchronously inside close() does not call releaseStream() via closePeer.
       isReconnecting = true;
+      sryLog('WebRTC', 'handleOffer', 'CLOSING_OLD_PEER', { adminSocketId });
       peerConns[adminSocketId].close();
       delete peerConns[adminSocketId];
+      sryLog('WebRTC', 'handleOffer', 'OLD_PEER_CLOSED', { adminSocketId });
     }
 
     // Mark streaming (enables PiP) — session service already running from login
     if (Platform.OS === 'android') {
+      sryLog('Service', 'handleOffer', 'SET_STREAMING_TRUE', {});
       setStreaming(true);
       setAutoEnterPiP(true);
+      sryLog('WebRTC', 'handleOffer', 'WAITING_PIP_SETUP', { delayMs: 400 });
       await new Promise(r => setTimeout(r, 400));
     }
 
     const isStreamAlive = localStream?.getVideoTracks().some(t => t.readyState === 'live');
+    sryLog('Camera', 'handleOffer', 'STREAM_ALIVE_CHECK', {
+      isStreamAlive: !!isStreamAlive,
+      hasLocalStream: !!localStream,
+      videoTrackState: localStream?.getVideoTracks()[0]?.readyState ?? 'none',
+    });
+
     if (!isStreamAlive) {
+      sryLog('Camera', 'handleOffer', 'RELEASING_DEAD_STREAM', {});
       releaseStream();
+      sryLog('Camera', 'handleOffer', 'WAITING_AFTER_RELEASE', { delayMs: 300 });
       await new Promise(r => setTimeout(r, 300));
     }
 
+    sryLog('Camera', 'handleOffer', 'ACQUIRING_STREAM', { facingMode: currentFacingMode });
     const stream = await acquireStream();
-    if (!stream) return;
+    if (!stream) {
+      sryLog('Camera', 'handleOffer', 'ACQUIRE_RETURNED_NULL', {});
+      return;
+    }
+    sryLog('Camera', 'handleOffer', 'STREAM_ACQUIRED', {
+      streamId: (stream as any).id ?? 'unknown',
+      videoTracks: stream.getVideoTracks().length,
+      audioTracks: stream.getAudioTracks().length,
+    });
 
     if (!isStreamAlive) {
+      sryLog('Camera', 'handleOffer', 'WAITING_CAMERA_STABILIZE', { delayMs: 1500 });
       await new Promise(r => setTimeout(r, 1500));
     }
 
+    sryLog('WebRTC', 'handleOffer', 'CREATING_PC', { adminSocketId });
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
     isReconnecting = false; // new peer registered — safe to release stream again if needed
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    sryLog('WebRTC', 'handleOffer', 'PC_CREATED', { adminSocketId, isReconnecting });
+
+    stream.getTracks().forEach(track => {
+      sryLog('WebRTC', 'addTrack', track.kind.toUpperCase(), {
+        trackId: track.id,
+        kind: track.kind,
+        readyState: track.readyState,
+        enabled: track.enabled,
+      });
+      pc.addTrack(track, stream);
+    });
 
     pc.addEventListener('icecandidate', (e: any) => {
-      if (e.candidate) socket?.emit('webrtc:ice', { to: adminSocketId, candidate: e.candidate });
+      if (e.candidate) {
+        sryLog('WebRTC', 'icecandidate', 'LOCAL_CANDIDATE', {
+          type: e.candidate.type ?? 'unknown',
+          protocol: e.candidate.protocol ?? 'unknown',
+          candidate: String(e.candidate.candidate ?? '').substring(0, 80),
+        });
+        socket?.emit('webrtc:ice', { to: adminSocketId, candidate: e.candidate });
+      } else {
+        sryLog('WebRTC', 'icecandidate', 'GATHERING_COMPLETE', {});
+      }
+    });
+
+    pc.addEventListener('iceconnectionstatechange', () => {
+      sryLog('WebRTC', 'iceconnectionstatechange', ((pc as any).iceConnectionState ?? 'unknown').toUpperCase(), {
+        adminSocketId,
+      });
+    });
+
+    pc.addEventListener('icegatheringstatechange', () => {
+      sryLog('WebRTC', 'icegatheringstatechange', ((pc as any).iceGatheringState ?? 'unknown').toUpperCase(), {
+        adminSocketId,
+      });
+    });
+
+    pc.addEventListener('signalingstatechange', () => {
+      sryLog('WebRTC', 'signalingstatechange', ((pc as any).signalingState ?? 'unknown').toUpperCase(), {
+        adminSocketId,
+      });
     });
 
     pc.addEventListener('connectionstatechange', () => {
       const s = (pc as any).connectionState;
+      sryLog('WebRTC', 'connectionstatechange', (s ?? 'unknown').toUpperCase(), {
+        adminSocketId,
+        peerCount: Object.keys(peerConns).length,
+      });
       if (s === 'failed' || s === 'closed') closePeer(adminSocketId);
     });
 
+    sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION', { adminSocketId });
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION_DONE', {
+      signalingState: (pc as any).signalingState,
+    });
+
+    sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER', { adminSocketId });
     const answer = await pc.createAnswer();
+    sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER_DONE', { answerType: answer.type });
+
     await pc.setLocalDescription(answer);
+    sryLog('WebRTC', 'handleOffer', 'SET_LOCAL_DESCRIPTION_DONE', {
+      signalingState: (pc as any).signalingState,
+    });
+
     socket?.emit('webrtc:answer', { to: adminSocketId, answer });
+    sryLog('WebRTC', 'handleOffer', 'ANSWER_SENT', { to: adminSocketId });
+
   } catch (err) {
     isReconnecting = false;
+    sryLog('WebRTC', 'handleOffer', 'ERROR', { err: String(err), adminSocketId });
     console.error('[webrtc] handleOffer error:', err);
   }
 }
 
 async function switchCamera(facingMode: 'environment' | 'user') {
-  if (facingMode === currentFacingMode) return;
+  sryLog('Camera', 'switchCamera', 'CALLED', {
+    requested: facingMode,
+    current: currentFacingMode,
+    peerCount: Object.keys(peerConns).length,
+  });
+  if (facingMode === currentFacingMode) {
+    sryLog('Camera', 'switchCamera', 'SKIPPED_SAME_FACING', { facingMode });
+    return;
+  }
   try {
     releaseStream();
     const stream = await acquireStream(facingMode);
     const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) return;
+    if (!videoTrack) {
+      sryLog('Camera', 'switchCamera', 'NO_VIDEO_TRACK', {});
+      return;
+    }
+    sryLog('Camera', 'switchCamera', 'REPLACING_TRACK', {
+      newTrackId: videoTrack.id,
+      newFacing: facingMode,
+      peerCount: Object.keys(peerConns).length,
+    });
     await Promise.all(
       Object.values(peerConns).map(async (pc: any) => {
         const sender = pc.getSenders?.().find((s: any) => s.track?.kind === 'video');
-        if (sender) await sender.replaceTrack(videoTrack);
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
+          sryLog('Camera', 'switchCamera', 'TRACK_REPLACED', { newTrackId: videoTrack.id });
+        } else {
+          sryLog('Camera', 'switchCamera', 'NO_VIDEO_SENDER_FOUND', {});
+        }
       })
     );
-  } catch {}
+    sryLog('Camera', 'switchCamera', 'SUCCESS', { newFacing: facingMode });
+  } catch (err) {
+    sryLog('Camera', 'switchCamera', 'ERROR', { err: String(err) });
+  }
 }
 
 function closePeer(adminSocketId: string) {
+  const peerExists = !!peerConns[adminSocketId];
+  sryLog('WebRTC', 'closePeer', 'CALLED', {
+    adminSocketId,
+    peerExists,
+    isReconnecting,
+    totalBefore: Object.keys(peerConns).length,
+  });
   peerConns[adminSocketId]?.close();
   delete peerConns[adminSocketId];
-  if (Object.keys(peerConns).length === 0) {
+  const remaining = Object.keys(peerConns).length;
+  sryLog('WebRTC', 'closePeer', 'PEER_REMOVED', { adminSocketId, remaining });
+  if (remaining === 0) {
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
+      sryLog('Service', 'closePeer', 'SET_STREAMING_FALSE', {});
       setStreaming(false);
       setAutoEnterPiP(false);
     }
     // Stream intentionally kept alive: admin may reconnect imminently.
     // releaseStream() is only called in stopSignaling() on logout.
+    sryLog('Camera', 'closePeer', 'STREAM_KEPT_ALIVE', {
+      hasStream: !!localStream,
+      streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    });
   }
 }
 
 function closeAllPeers() {
-  Object.keys(peerConns).forEach(id => peerConns[id]?.close());
+  const count = Object.keys(peerConns).length;
+  sryLog('WebRTC', 'closeAllPeers', 'CALLED', { count });
+  Object.keys(peerConns).forEach(id => {
+    sryLog('WebRTC', 'closeAllPeers', 'CLOSING', { id });
+    peerConns[id]?.close();
+  });
   peerConns = {};
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
+    sryLog('Service', 'closeAllPeers', 'SET_STREAMING_FALSE', {});
     setStreaming(false);
     setAutoEnterPiP(false);
   }
   // Stream kept alive — released only on logout (stopSignaling).
+  sryLog('Camera', 'closeAllPeers', 'STREAM_KEPT_ALIVE', {
+    hasStream: !!localStream,
+    streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+  });
 }

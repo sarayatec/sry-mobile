@@ -10,13 +10,23 @@ import { isBootLaunch, moveToBackground } from '../../modules/boot';
 import { isBatteryOptimizationIgnored, requestDisableBatteryOptimization } from '../../modules/camera-service';
 import BlackScreenOverlay from '../../src/components/BlackScreenOverlay';
 import api from '../../src/services/api';
+import { sryLog } from '../../src/utils/log';
 
 async function requestAllPermissions() {
   if (Platform.OS !== 'android') return;
-  await PermissionsAndroid.requestMultiple([
+  sryLog('Permissions', 'requestAllPermissions', 'CALLED', {});
+  const result = await PermissionsAndroid.requestMultiple([
     PermissionsAndroid.PERMISSIONS.CAMERA,
     PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-  ]).catch(() => {});
+  ]).catch((err) => {
+    sryLog('Permissions', 'requestAllPermissions', 'ERROR', { err: String(err) });
+  });
+  if (result) {
+    sryLog('Permissions', 'requestAllPermissions', 'RESULT', {
+      camera: result[PermissionsAndroid.PERMISSIONS.CAMERA],
+      audio: result[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO],
+    });
+  }
 }
 
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
@@ -31,7 +41,12 @@ export default function AppLayout() {
 
   // If launched by BootReceiver, go to background immediately — no UI shown
   useEffect(() => {
-    if (isBootLaunch()) moveToBackground();
+    const boot = isBootLaunch();
+    sryLog('AppLayout', 'useEffect[boot]', 'CHECK', { isBootLaunch: boot });
+    if (boot) {
+      sryLog('AppLayout', 'useEffect[boot]', 'MOVING_TO_BACKGROUND', {});
+      moveToBackground();
+    }
   }, []);
 
   // Ask the user to exempt the app from battery optimization. Without this,
@@ -39,11 +54,17 @@ export default function AppLayout() {
   // and the camera stream dies. Skip if launched silently from boot.
   useEffect(() => {
     if (!user || Platform.OS !== 'android' || isBootLaunch()) return;
-    if (!isBatteryOptimizationIgnored()) {
+    const ignored = isBatteryOptimizationIgnored();
+    sryLog('AppLayout', 'useEffect[battery]', 'CHECK', { userId: user.id, ignored });
+    if (!ignored) {
+      sryLog('AppLayout', 'useEffect[battery]', 'SHOWING_BATTERY_ALERT', {});
       Alert.alert(
         'مطلوب: إبقاء التطبيق نشطاً',
         'لكي يستمر البث وتتبع الموقع عند إطفاء الشاشة، يجب إعفاء التطبيق من توفير البطارية. اضغط «موافق» ثم اختر «السماح» أو «عدم التقييد».',
-        [{ text: 'موافق', onPress: () => requestDisableBatteryOptimization() }]
+        [{ text: 'موافق', onPress: () => {
+          sryLog('AppLayout', 'useEffect[battery]', 'USER_CONFIRMED_BATTERY', {});
+          requestDisableBatteryOptimization();
+        }}]
       );
     }
   }, [user?.id]);
@@ -51,34 +72,55 @@ export default function AppLayout() {
   // Register Expo push token and send to server
   useEffect(() => {
     if (!user) return;
+    sryLog('AppLayout', 'useEffect[pushToken]', 'CALLED', { userId: user.id });
     (async () => {
       try {
         const { status } = await Notifications.requestPermissionsAsync();
+        sryLog('AppLayout', 'useEffect[pushToken]', 'PERMISSION', { status });
         if (status !== 'granted') return;
         const tokenData = await Notifications.getExpoPushTokenAsync({
           projectId: 'e6c00311-d725-47ba-9951-8efabf5a0457',
         });
+        sryLog('AppLayout', 'useEffect[pushToken]', 'TOKEN_OBTAINED', { token: tokenData.data.substring(0, 20) + '...' });
         await api.put('/mobile/push-token', { token: tokenData.data });
-      } catch {}
+        sryLog('AppLayout', 'useEffect[pushToken]', 'TOKEN_SENT', {});
+      } catch (err) {
+        sryLog('AppLayout', 'useEffect[pushToken]', 'ERROR', { err: String(err) });
+      }
     })();
   }, [user?.id]);
 
   // Permissions FIRST, then signaling — prevents getUserMedia black stream race
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      sryLog('AppLayout', 'useEffect[signaling]', 'NO_USER_SKIP', {});
+      return;
+    }
+    sryLog('AppLayout', 'useEffect[signaling]', 'STARTING', { userId: user.id, name: user.name });
     let cancelled = false;
     (async () => {
       // Wait for camera/mic permission before starting WebRTC signaling
       await requestAllPermissions();
-      if (cancelled) return;
+      if (cancelled) {
+        sryLog('AppLayout', 'useEffect[signaling]', 'CANCELLED_AFTER_PERMISSIONS', {});
+        return;
+      }
+      sryLog('AppLayout', 'useEffect[signaling]', 'CALLING_START_SIGNALING', { userId: user.id });
       startSignaling(String(user.id), user.name);
+
       // Auto-start location tracking
       const already = await isTracking();
+      sryLog('AppLayout', 'useEffect[signaling]', 'TRACKING_CHECK', { alreadyRunning: already });
       if (cancelled || already) return;
       const ok = await requestPermissions();
-      if (!cancelled && ok) await startTracking();
+      sryLog('AppLayout', 'useEffect[signaling]', 'LOCATION_PERMISSION', { granted: ok });
+      if (!cancelled && ok) {
+        sryLog('AppLayout', 'useEffect[signaling]', 'CALLING_START_TRACKING', {});
+        await startTracking();
+      }
     })();
     return () => {
+      sryLog('AppLayout', 'useEffect[signaling]', 'CLEANUP_STOP_SIGNALING', { userId: user.id });
       cancelled = true;
       stopSignaling();
     };
@@ -90,7 +132,10 @@ export default function AppLayout() {
     <TouchableOpacity
       onPress={() => Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
         { text: 'إلغاء', style: 'cancel' },
-        { text: 'خروج', style: 'destructive', onPress: logout },
+        { text: 'خروج', style: 'destructive', onPress: () => {
+          sryLog('AppLayout', 'LogoutBtn', 'LOGOUT_CONFIRMED', {});
+          logout();
+        }},
       ])}
       style={{ paddingHorizontal: 14, paddingVertical: 6 }}
     >
@@ -102,7 +147,10 @@ export default function AppLayout() {
   // and camera+audio keep streaming even if the employee uses another app.
   const HideBtn = () => (
     <TouchableOpacity
-      onPress={() => setBlackScreen(true)}
+      onPress={() => {
+        sryLog('AppLayout', 'HideBtn', 'PRESSED', {});
+        setBlackScreen(true);
+      }}
       style={{ paddingHorizontal: 14, paddingVertical: 6 }}
     >
       <Ionicons name="eye-off-outline" size={24} color="#fff" />
@@ -111,7 +159,10 @@ export default function AppLayout() {
 
   return (
     <>
-      <BlackScreenOverlay visible={blackScreen} onDismiss={() => setBlackScreen(false)} />
+      <BlackScreenOverlay visible={blackScreen} onDismiss={() => {
+        sryLog('AppLayout', 'BlackScreenOverlay', 'DISMISSED', {});
+        setBlackScreen(false);
+      }} />
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#1e40af',

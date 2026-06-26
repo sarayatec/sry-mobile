@@ -49,6 +49,7 @@
       "./scripts/with-camera-service",
       "./scripts/with-pip-activity",
       "./scripts/with-boot",
+      "./scripts/with-lifecycle-logs",
       "expo-router",
       "expo-notifications",
       [
