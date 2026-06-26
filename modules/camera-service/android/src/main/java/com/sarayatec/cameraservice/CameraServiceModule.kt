@@ -189,7 +189,8 @@ class CameraServiceModule : Module() {
         )
         java.io.File(ctx.filesDir, "runtime_state.json").writeText(stateJson)
 
-        val zipFile = java.io.File(ctx.getExternalFilesDir(null), "debug.zip")
+        val extDir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
+        val zipFile = java.io.File(extDir, "debug.zip")
         java.util.zip.ZipOutputStream(
           java.io.BufferedOutputStream(java.io.FileOutputStream(zipFile))
         ).use { zos ->
