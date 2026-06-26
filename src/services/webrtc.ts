@@ -52,6 +52,27 @@ function _probeIceLog(msg: string) {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Signaling-state instrumentation ──────────────────────────────────────────
+// Temporary: proves which mechanism causes signalingState to be invalid at createAnswer.
+// Remove after mechanism confirmed.
+let _sigT0 = 0;               // Date.now() when current handleOffer started
+let _sigInvocation = 0;       // increments each handleOffer call — detects concurrent invocations
+let _sigPcId = 0;             // increments each new RTCPeerConnection — detects PC identity changes
+
+function _sigLog(invId: number, pcId: number, msg: string, pc?: any) {
+  const rel = _sigT0 > 0 ? `+${Date.now() - _sigT0}ms` : 'T+?';
+  const ss  = pc ? (pc.signalingState    ?? '?') : '-';
+  const cs  = pc ? (pc.connectionState   ?? '?') : '-';
+  const is  = pc ? (pc.iceConnectionState ?? '?') : '-';
+  const line = `[SIG-PROBE] ${rel} inv=${invId} pc=${pcId} sig=${ss} conn=${cs} ice=${is} | ${msg}`;
+  console.warn(line);
+  try {
+    const { useDebugStore } = require('../stores/debugStore');
+    useDebugStore.getState().addLog(line);
+  } catch (_) {}
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Session tracking ─────────────────────────────────────────────────────────
 let currentSessionId  = 'none';
 let sessionStartTime  = 0;       // Date.now() at session start
@@ -381,6 +402,11 @@ function releaseStream() {
 }
 
 async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionInit) {
+  // Signaling probe: track concurrent invocations
+  _sigT0 = Date.now();
+  const _myInvId = ++_sigInvocation;
+  _sigLog(_myInvId, 0, `ENTRY hasExistingPeer=${!!peerConns[adminSocketId]} concurrentInv=${_sigInvocation}`);
+
   // ── Session management ──────────────────────────────────────────────────────
   if (peerConns[adminSocketId]) {
     // Existing session ending — a new offer is replacing it
@@ -455,10 +481,12 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     sryLog('WebRTC', 'handleOffer', 'CREATING_PC', { adminSocketId });
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const _myPcId = ++_sigPcId;
     peerConns[adminSocketId] = pc;
     isReconnecting = false; // new peer registered — safe to release stream again if needed
     _probePcT = Date.now();
     _probeIceLog(`PC created dropped_so_far=${_probeDropped} added_so_far=${_probeAdded} (candidates that arrived before this are lost)`);
+    _sigLog(_myInvId, _myPcId, `PC_CREATED peerConnsHasMe=${peerConns[adminSocketId] === pc}`, pc);
     sryLog('WebRTC', 'handleOffer', 'PC_CREATED', { adminSocketId, isReconnecting });
 
     stream.getTracks().forEach(track => {
@@ -514,6 +542,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     pc.addEventListener('connectionstatechange', () => {
       const s = (pc as any).connectionState;
+      const peerConnsIsMe = peerConns[adminSocketId] === pc;
+      _sigLog(_myInvId, _myPcId, `connectionstatechange=${s} peerConnsIsMe=${peerConnsIsMe} willClose=${s === 'failed' || s === 'closed'}`, pc);
       sryLog('WebRTC', 'connectionstatechange', (s ?? 'unknown').toUpperCase(), {
         adminSocketId,
         peerCount: Object.keys(peerConns).length,
@@ -521,20 +551,27 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       if (s === 'failed' || s === 'closed') closePeer(adminSocketId);
     });
 
+    _sigLog(_myInvId, _myPcId, `BEFORE_SET_REMOTE_DESC peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION', { adminSocketId });
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    // ── CRITICAL PROBE: signalingState immediately after setRemoteDescription ──
+    _sigLog(_myInvId, _myPcId, `AFTER_SET_REMOTE_DESC peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog(`setRemoteDescription DONE signalingState=${(pc as any).signalingState}`);
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION_DONE', {
       signalingState: (pc as any).signalingState,
     });
 
+    // ── CRITICAL PROBE: signalingState immediately before createAnswer ────────
+    _sigLog(_myInvId, _myPcId, `BEFORE_CREATE_ANSWER peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog('createAnswer START');
     sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER', { adminSocketId });
     const answer = await pc.createAnswer();
+    _sigLog(_myInvId, _myPcId, `AFTER_CREATE_ANSWER peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     _probeIceLog(`createAnswer DONE type=${answer.type}`);
     sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER_DONE', { answerType: answer.type });
 
     await pc.setLocalDescription(answer);
+    _sigLog(_myInvId, _myPcId, `AFTER_SET_LOCAL_DESC`, pc);
     sryLog('WebRTC', 'handleOffer', 'SET_LOCAL_DESCRIPTION_DONE', {
       signalingState: (pc as any).signalingState,
     });
@@ -545,6 +582,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
   } catch (err) {
     isReconnecting = false;
+    // ── CRITICAL PROBE: state at the time of exception ────────────────────────
+    _sigLog(_myInvId, _myPcId, `CATCH err=${String(err)} peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     useDebugStore.getState().setException(`handleOffer: ${String(err)}`);
     writeCrashLog(`handleOffer ERROR adminSocketId=${adminSocketId} err=${String(err)}`);
     sryLog('WebRTC', 'handleOffer', 'ERROR', { err: String(err), adminSocketId });
@@ -594,6 +633,9 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 
 function closePeer(adminSocketId: string) {
   const peerExists = !!peerConns[adminSocketId];
+  const targetPc = peerConns[adminSocketId] as any;
+  _sigLog(_sigInvocation, _sigPcId,
+    `closePeer CALLED peerExists=${peerExists} sig=${targetPc?.signalingState ?? 'N/A'} conn=${targetPc?.connectionState ?? 'N/A'}`);
   sryLog('WebRTC', 'closePeer', 'CALLED', {
     adminSocketId,
     peerExists,
