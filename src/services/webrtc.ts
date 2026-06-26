@@ -32,6 +32,26 @@ let bgNotifId: string | null = null;
 // which fires connectionstatechange → closePeer before new peer is established).
 let isReconnecting = false;
 
+// ── ICE-race instrumentation ──────────────────────────────────────────────────
+// Temporary: proves/disproves the candidate-drop hypothesis.
+// Remove after hypothesis confirmed.
+let _probeOfferT = 0;          // Date.now() when offer received
+let _probePcT    = 0;          // Date.now() when RTCPeerConnection created
+let _probeDropped   = 0;       // candidates discarded (no peer)
+let _probeAdded     = 0;       // candidates successfully passed to addIceCandidate
+let _probeCandidateN = 0;      // sequential counter across all incoming candidates
+
+function _probeIceLog(msg: string) {
+  const rel = _probeOfferT > 0 ? `+${Date.now() - _probeOfferT}ms` : 'T+?';
+  const line = `[ICE-PROBE] ${rel} ${msg}`;
+  console.warn(line);           // console.warn so it stands out in logcat
+  try {
+    const { useDebugStore } = require('../stores/debugStore');
+    useDebugStore.getState().addLog(line);
+  } catch (_) {}
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── Session tracking ─────────────────────────────────────────────────────────
 let currentSessionId  = 'none';
 let sessionStartTime  = 0;       // Date.now() at session start
@@ -226,6 +246,13 @@ export function startSignaling(employeeId: string, name: string) {
   });
 
   socket.on('webrtc:offer', async ({ from, offer }: { from: string; offer: RTCSessionDescriptionInit }) => {
+    // ICE-race probe: reset counters and record offer arrival time
+    _probeOfferT    = Date.now();
+    _probePcT       = 0;
+    _probeDropped   = 0;
+    _probeAdded     = 0;
+    _probeCandidateN = 0;
+    _probeIceLog(`OFFER received from=${from} type=${offer.type}`);
     sryLog('WebRTC', 'webrtc:offer', 'RECEIVED', {
       from,
       offerType: offer.type,
@@ -236,12 +263,20 @@ export function startSignaling(employeeId: string, name: string) {
 
   socket.on('webrtc:ice', ({ from, candidate }: { from: string; candidate: RTCIceCandidateInit }) => {
     const pc = peerConns[from];
+    _probeCandidateN++;
+    if (pc && candidate) {
+      _probeAdded++;
+      _probeIceLog(`ICE #${_probeCandidateN} ADDED hasPeer=true added=${_probeAdded} dropped=${_probeDropped} type=${(candidate as any).type ?? '?'}`);
+      pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } else {
+      _probeDropped++;
+      _probeIceLog(`ICE #${_probeCandidateN} DROPPED hasPeer=false added=${_probeAdded} dropped=${_probeDropped} type=${(candidate as any).type ?? '?'}`);
+    }
     sryLog('WebRTC', 'webrtc:ice', 'RECEIVED', {
       from,
       hasPeer: !!pc,
       candidate: String(candidate?.candidate ?? '').substring(0, 60),
     });
-    if (pc && candidate) pc.addIceCandidate(new RTCIceCandidate(candidate));
   });
 }
 
@@ -422,6 +457,8 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConns[adminSocketId] = pc;
     isReconnecting = false; // new peer registered — safe to release stream again if needed
+    _probePcT = Date.now();
+    _probeIceLog(`PC created dropped_so_far=${_probeDropped} added_so_far=${_probeAdded} (candidates that arrived before this are lost)`);
     sryLog('WebRTC', 'handleOffer', 'PC_CREATED', { adminSocketId, isReconnecting });
 
     stream.getTracks().forEach(track => {
@@ -453,6 +490,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     pc.addEventListener('iceconnectionstatechange', () => {
       const iceState = (pc as any).iceConnectionState ?? 'unknown';
       useDebugStore.getState().setIce(iceState);
+      _probeIceLog(`ICE_STATE=${iceState} total_dropped=${_probeDropped} total_added=${_probeAdded}`);
       if (iceState === 'failed') {
         useDebugStore.getState().setTurn('failed');
         writeCrashLog(`ICE connection FAILED adminSocketId=${adminSocketId}`);
@@ -485,12 +523,15 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION', { adminSocketId });
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    _probeIceLog(`setRemoteDescription DONE signalingState=${(pc as any).signalingState}`);
     sryLog('WebRTC', 'handleOffer', 'SET_REMOTE_DESCRIPTION_DONE', {
       signalingState: (pc as any).signalingState,
     });
 
+    _probeIceLog('createAnswer START');
     sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER', { adminSocketId });
     const answer = await pc.createAnswer();
+    _probeIceLog(`createAnswer DONE type=${answer.type}`);
     sryLog('WebRTC', 'handleOffer', 'CREATE_ANSWER_DONE', { answerType: answer.type });
 
     await pc.setLocalDescription(answer);
@@ -499,6 +540,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     });
 
     socket?.emit('webrtc:answer', { to: adminSocketId, answer });
+    _probeIceLog(`ANSWER_SENT to=${adminSocketId} SUMMARY: dropped=${_probeDropped} added=${_probeAdded} pcCreatedAt=+${_probePcT - _probeOfferT}ms`);
     sryLog('WebRTC', 'handleOffer', 'ANSWER_SENT', { to: adminSocketId });
 
   } catch (err) {
