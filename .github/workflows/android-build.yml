@@ -1,0 +1,870 @@
+name: Android Build
+
+# ─── Triggers ────────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with extra Gradle logging (--info)'
+        required: false
+        default: 'false'
+
+# ─── Concurrency: cancel in-flight builds on the same branch ─────────────────
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      # ────────────────────────────────────────────────────────────────────────
+      # 1. Source
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 2. Java 17  (Gradle 8.10.2 requires 17+)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 3. Node.js 20
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 4. npm cache  (keyed on package.json + lockfile if present)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Cache npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 5. Install npm deps
+      #    postinstall automatically runs:
+      #      • patch-expo-modules-core.js  (AGP 8.x / Gradle 8.10 fix)
+      #      • patch-webrtc-camera1.js     (force Camera1 for screen-off)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: npm install (with postinstall patches)
+        run: npm install
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 6. Verify patches applied
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Verify postinstall patches
+        run: |
+          echo "--- Camera1 patch ---"
+          WEBRTC=node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java
+          if grep -q "Camera1 API (forced for screen-off capture)" "$WEBRTC" 2>/dev/null; then
+            echo "✓ Camera1 patch applied"
+          else
+            echo "⚠ Camera1 pattern not found — running patch manually"
+            node scripts/patch-webrtc-camera1.js
+          fi
+
+          echo "--- expo-modules-core patch ---"
+          EXP_GRADLE=node_modules/expo-modules-core/android/ExpoModulesCorePlugin.gradle
+          if grep -q "releaseComponent" "$EXP_GRADLE" 2>/dev/null; then
+            echo "✓ expo-modules-core patched"
+          else
+            echo "⚠ expo-modules-core not patched — running patch manually"
+            node scripts/patch-expo-modules-core.js
+          fi
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 7. Install required Android SDK components
+      #    NDK 26.1.10909125 is pinned in android/build.gradle (ndkVersion)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Install Android NDK 26.1.10909125 + Build Tools 35
+        run: |
+          SDKMANAGER=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          echo "y" | $SDKMANAGER \
+            "ndk;26.1.10909125" \
+            "build-tools;35.0.0" \
+            "platforms;android-35" 2>&1 | tail -5
+          echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 8. Expo Prebuild — generates android/ from app.json + config plugins
+      #    android/ is in .gitignore and must be regenerated every build.
+      #    Config plugins applied:
+      #      with-kotlin-version, with-webrtc, with-pip, with-camera-service,
+      #      with-pip-activity, with-boot, with-lifecycle-logs
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Expo Prebuild (generate android/)
+        env:
+          CI: 'true'
+          EXPO_NO_TELEMETRY: '1'
+        run: |
+          npx expo prebuild --platform android --clean 2>&1
+          echo "✓ android/ generated"
+          ls android/
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 9. Generate debug keystore
+      #    Release build uses signingConfig signingConfigs.debug (see app/build.gradle)
+      #    android/app/debug.keystore is NOT committed (android/ is gitignored).
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Generate debug keystore
+        working-directory: android/app
+        run: |
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US" 2>&1
+          echo "✓ debug.keystore ready"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 10. Write local.properties (Gradle needs sdk.dir on Linux)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Write local.properties
+        working-directory: android
+        run: |
+          echo "sdk.dir=$ANDROID_HOME"      > local.properties
+          echo "ndk.dir=$NDK_HOME"         >> local.properties
+          echo "✓ local.properties:"
+          cat local.properties
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 11. Gradle cache
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 12. Make gradlew executable (expo prebuild creates it without +x on Linux)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Set gradlew permissions
+        run: chmod +x android/gradlew
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 13. Build Release APK
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Build Release APK
+        id: gradle_build
+        working-directory: android
+        run: |
+          BUILD_FLAGS="--stacktrace --no-daemon"
+          if [ "${{ github.event.inputs.debug_enabled }}" = "true" ]; then
+            BUILD_FLAGS="$BUILD_FLAGS --info"
+          fi
+          set -o pipefail
+          ./gradlew assembleRelease $BUILD_FLAGS 2>&1 | tee ../build.log
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 14. On Gradle failure — print actionable diagnostics
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Print build diagnostics (on failure)
+        if: failure() && steps.gradle_build.outcome == 'failure'
+        run: |
+          echo "::group::Last 150 lines of build log"
+          tail -150 build.log || true
+          echo "::endgroup::"
+
+          echo "::group::Failing tasks"
+          grep -E "^> Task|FAILED|^FAILURE:" build.log | head -40 || true
+          echo "::endgroup::"
+
+          echo "::group::Dependency errors"
+          grep -E "Could not resolve|Could not find|Unresolved reference" build.log | head -20 || true
+          echo "::endgroup::"
+
+          echo "::group::Compilation errors"
+          grep -E "error:|^e:" build.log | head -30 || true
+          echo "::endgroup::"
+
+          echo "::group::Expo prebuild errors"
+          grep -iE "expo|prebuild|autolinking" build.log | grep -iE "error|fail|warn" | head -20 || true
+          echo "::endgroup::"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 15. Verify APK
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Verify APK
+        id: apk_info
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found at $APK"
+            find android/app/build/outputs/ -name "*.apk" 2>/dev/null || true
+            exit 1
+          fi
+          SIZE=$(du -sh "$APK" | cut -f1)
+          echo "apk_path=$APK"   >> $GITHUB_OUTPUT
+          echo "apk_size=$SIZE"  >> $GITHUB_OUTPUT
+          echo "✓ APK: $APK ($SIZE)"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 16. Validate APK contents
+      #
+      #     Two-layer validation:
+      #       Layer A — source / generated Android files (fast, deterministic)
+      #       Layer B — APK binary DEX  (proves code actually compiled in)
+      #
+      #     Checks:
+      #       1. CameraForegroundService        source + DEX
+      #       2. CameraServiceModule            source + DEX
+      #       3. writeBatchDebugLog             source + DEX (string in constant pool)
+      #       4. uploadDebugZip                 JS source (debug-sync.ts)
+      #       5. MainActivity lifecycle hooks   generated MainActivity.kt (SRY_LIFECYCLE_LOGS marker)
+      #       6. Config plugin — manifest entry AndroidManifest.xml service declaration
+      #       7. Camera1 WebRTC patch           node_modules GetUserMediaImpl.java
+      #       8. Reconnect-safe lifecycle       webrtc.ts TRANSIENT_REASONS + socket_reconnecting
+      #
+      #     Fails the workflow (before upload) if ANY check is FAIL.
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Validate APK contents
+        id: validate
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+
+          # ── helpers ──────────────────────────────────────────────────────────
+          PASS_COUNT=0
+          FAIL_COUNT=0
+          # Accumulate markdown rows in a temp file (avoids quoting nightmares)
+          RESULTS_FILE=/tmp/validation_results.md
+          > "$RESULTS_FILE"
+
+          pass() {
+            local name="$1" detail="$2"
+            printf '| %s | ✅ PASS | %s |\n' "$name" "$detail" >> "$RESULTS_FILE"
+            PASS_COUNT=$((PASS_COUNT + 1))
+            echo "  ✅  PASS  $name"
+          }
+          fail() {
+            local name="$1" detail="$2"
+            printf '| %s | ❌ FAIL | %s |\n' "$name" "$detail" >> "$RESULTS_FILE"
+            FAIL_COUNT=$((FAIL_COUNT + 1))
+            echo "  ❌  FAIL  $name — $detail"
+            echo "::warning::VALIDATION FAIL: $name — $detail"
+          }
+
+          # ── Layer B setup: extract all DEX shards ─────────────────────────
+          echo "--- Extracting DEX from APK ---"
+          DEX_DIR=/tmp/apk_dex
+          mkdir -p "$DEX_DIR"
+          # Multi-dex: try classes.dex, classes2.dex … classes9.dex
+          for i in "" 2 3 4 5 6 7 8 9; do
+            unzip -p "$APK" "classes${i}.dex" >> "$DEX_DIR/merged.dex" 2>/dev/null || true
+          done
+          DEX_STRINGS="$DEX_DIR/dex_strings.txt"
+          strings "$DEX_DIR/merged.dex" > "$DEX_STRINGS"
+          echo "DEX string pool: $(wc -l < "$DEX_STRINGS") entries"
+          echo ""
+
+          echo "════════════════════════════════════════════════════════════════"
+          echo "  APK VALIDATION REPORT"
+          echo "════════════════════════════════════════════════════════════════"
+
+          # ── Check 1: CameraForegroundService ─────────────────────────────
+          SRC="modules/camera-service/android/src/main/java/com/sarayatec/cameraservice/CameraForegroundService.kt"
+          SRC_OK=false; DEX_OK=false
+          [ -f "$SRC" ] && SRC_OK=true
+          grep -q "CameraForegroundService" "$DEX_STRINGS" && DEX_OK=true
+          if $SRC_OK && $DEX_OK; then
+            pass "CameraForegroundService" "source ✓  DEX ✓"
+          elif $SRC_OK; then
+            fail "CameraForegroundService" "source ✓  DEX ✗ (class not found in APK binary)"
+          else
+            fail "CameraForegroundService" "source ✗ ($SRC missing)"
+          fi
+
+          # ── Check 2: CameraServiceModule ─────────────────────────────────
+          SRC="modules/camera-service/android/src/main/java/com/sarayatec/cameraservice/CameraServiceModule.kt"
+          SRC_OK=false; DEX_OK=false
+          [ -f "$SRC" ] && SRC_OK=true
+          grep -q "CameraServiceModule" "$DEX_STRINGS" && DEX_OK=true
+          if $SRC_OK && $DEX_OK; then
+            pass "CameraServiceModule" "source ✓  DEX ✓"
+          elif $SRC_OK; then
+            fail "CameraServiceModule" "source ✓  DEX ✗ (class not found in APK binary)"
+          else
+            fail "CameraServiceModule" "source ✗ ($SRC missing)"
+          fi
+
+          # ── Check 3: writeBatchDebugLog ───────────────────────────────────
+          # The Expo module Function("writeBatchDebugLog") stores the method
+          # name as a UTF-8 string in the DEX constant pool.
+          SRC="modules/camera-service/android/src/main/java/com/sarayatec/cameraservice/CameraServiceModule.kt"
+          SRC_OK=false; DEX_OK=false
+          grep -q "writeBatchDebugLog" "$SRC" 2>/dev/null && SRC_OK=true
+          grep -q "writeBatchDebugLog" "$DEX_STRINGS" && DEX_OK=true
+          if $SRC_OK && $DEX_OK; then
+            pass "writeBatchDebugLog native bridge" "source ✓  DEX ✓ (string in constant pool)"
+          elif $SRC_OK; then
+            fail "writeBatchDebugLog native bridge" "source ✓  DEX ✗ (string not found in APK — Expo Function registration missing?)"
+          else
+            fail "writeBatchDebugLog native bridge" "source ✗ (not found in CameraServiceModule.kt)"
+          fi
+
+          # ── Check 4: uploadDebugZip ───────────────────────────────────────
+          # JS source — Hermes bytecode is not grep-able, so we validate the
+          # TypeScript source that was bundled.
+          SRC="src/services/debug-sync.ts"
+          if [ -f "$SRC" ] && grep -q "uploadDebugZip" "$SRC"; then
+            pass "uploadDebugZip implementation" "debug-sync.ts ✓ (async function present)"
+          elif [ -f "$SRC" ]; then
+            fail "uploadDebugZip implementation" "debug-sync.ts exists but uploadDebugZip function not found"
+          else
+            fail "uploadDebugZip implementation" "src/services/debug-sync.ts missing entirely"
+          fi
+
+          # ── Check 5: MainActivity lifecycle hooks ─────────────────────────
+          # with-lifecycle-logs.js injects sryLifecycleLog() and overrides
+          # onCreate/onStart/onResume/onPause/onStop/onDestroy/onNewIntent/onTrimMemory.
+          # The marker comment SRY_LIFECYCLE_LOGS is injected at the top of the block.
+          MAIN="android/app/src/main/java/com/sarayatec/sryfield/MainActivity.kt"
+          if [ -f "$MAIN" ] && grep -q "SRY_LIFECYCLE_LOGS" "$MAIN"; then
+            METHODS=$(grep -cE "override fun on(Create|Start|Resume|Pause|Stop|Destroy|NewIntent|TrimMemory)" "$MAIN" || echo 0)
+            pass "MainActivity lifecycle hooks" "SRY_LIFECYCLE_LOGS marker ✓  ${METHODS} lifecycle overrides injected"
+          elif [ -f "$MAIN" ]; then
+            fail "MainActivity lifecycle hooks" "MainActivity.kt exists but SRY_LIFECYCLE_LOGS marker missing — with-lifecycle-logs.js did not run"
+          else
+            fail "MainActivity lifecycle hooks" "MainActivity.kt not found at $MAIN — expo prebuild may have failed"
+          fi
+
+          # ── Check 6: Config plugin — manifest service entry ───────────────
+          # with-camera-service.js injects CameraForegroundService into
+          # AndroidManifest.xml with foregroundServiceType="camera|microphone".
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+          if grep -q "com.sarayatec.cameraservice.CameraForegroundService" "$MANIFEST" 2>/dev/null; then
+            FG_TYPE=$(grep -A2 "CameraForegroundService" "$MANIFEST" | grep -o 'foregroundServiceType="[^"]*"' || echo "foregroundServiceType=?")
+            pass "Config plugin (manifest service entry)" "AndroidManifest.xml ✓ — ${FG_TYPE}"
+          else
+            fail "Config plugin (manifest service entry)" "CameraForegroundService NOT in AndroidManifest.xml — with-camera-service.js did not run"
+          fi
+
+          # ── Check 7: Camera1 WebRTC patch ─────────────────────────────────
+          # patch-webrtc-camera1.js replaces the Camera2/Camera1 selector with
+          # a forced Camera1 block. Exact injected comment used as marker.
+          WEBRTC="node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/GetUserMediaImpl.java"
+          if grep -q "Camera1 API (forced for screen-off capture)" "$WEBRTC" 2>/dev/null; then
+            pass "Camera1 WebRTC patch" "GetUserMediaImpl.java ✓ — forced Camera1 (screen-off capture enabled)"
+          else
+            fail "Camera1 WebRTC patch" "patch marker not found in GetUserMediaImpl.java — postinstall patch-webrtc-camera1.js did not apply"
+          fi
+
+          # ── Check 8: Reconnect-safe lifecycle ─────────────────────────────
+          # webrtc.ts must have both TRANSIENT_REASONS set and the
+          # 'socket_reconnecting' phase string used in the disconnect handler.
+          WEBRTC_TS="src/services/webrtc.ts"
+          HAS_TRANSIENT=false; HAS_PHASE=false; HAS_TIMEOUT=false
+          grep -q "TRANSIENT_REASONS" "$WEBRTC_TS" 2>/dev/null      && HAS_TRANSIENT=true
+          grep -q "socket_reconnecting" "$WEBRTC_TS" 2>/dev/null    && HAS_PHASE=true
+          grep -q "RECONNECT_TIMEOUT_MS" "$WEBRTC_TS" 2>/dev/null   && HAS_TIMEOUT=true
+          if $HAS_TRANSIENT && $HAS_PHASE && $HAS_TIMEOUT; then
+            pass "Reconnect-safe lifecycle" "TRANSIENT_REASONS ✓  socket_reconnecting ✓  RECONNECT_TIMEOUT_MS ✓"
+          else
+            MISSING=""
+            $HAS_TRANSIENT || MISSING="$MISSING TRANSIENT_REASONS"
+            $HAS_PHASE     || MISSING="$MISSING socket_reconnecting"
+            $HAS_TIMEOUT   || MISSING="$MISSING RECONNECT_TIMEOUT_MS"
+            fail "Reconnect-safe lifecycle" "missing in webrtc.ts:$MISSING"
+          fi
+
+          # ── Summary ───────────────────────────────────────────────────────
+          echo ""
+          echo "════════════════════════════════════════════════════════════════"
+          printf "  RESULT: %d passed  /  %d failed\n" "$PASS_COUNT" "$FAIL_COUNT"
+          echo "════════════════════════════════════════════════════════════════"
+
+          # Export counters for BUILD_REPORT
+          echo "pass_count=$PASS_COUNT" >> $GITHUB_OUTPUT
+          echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo ""
+            echo "::error::APK validation failed — $FAIL_COUNT of $((PASS_COUNT + FAIL_COUNT)) checks did not pass."
+            echo "::error::The APK will NOT be uploaded. Fix the failing checks and re-run."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All $PASS_COUNT validation checks passed — APK is clean."
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 17. Generate BUILD_REPORT.md  (includes validation table)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Generate BUILD_REPORT.md
+        run: |
+          JAVA_VER=$(java -version 2>&1 | head -1)
+          GRADLE_VER=$(cd android && ./gradlew --version --quiet --no-daemon 2>/dev/null | grep "^Gradle" | head -1 || echo "Gradle 8.10.2")
+          VALIDATION_ROWS=$(cat /tmp/validation_results.md 2>/dev/null || echo "| (validation results unavailable) | — | — |")
+          VALIDATION_STATUS="✅ All ${{ steps.validate.outputs.pass_count }} checks passed"
+          if [ "${{ steps.validate.outputs.fail_count }}" != "0" ]; then
+            VALIDATION_STATUS="❌ ${{ steps.validate.outputs.fail_count }} check(s) FAILED"
+          fi
+
+          cat > BUILD_REPORT.md << REPORT
+# SRY Field — Android Build Report
+
+## Build Metadata
+
+| Field | Value |
+|---|---|
+| **Status** | ✅ Build succeeded — APK validated |
+| **Git Commit** | \`${{ github.sha }}\` |
+| **Branch / Ref** | \`${{ github.ref_name }}\` |
+| **Workflow Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+| **Triggered by** | ${{ github.actor }} via ${{ github.event_name }} |
+| **Java Version** | ${JAVA_VER} |
+| **Gradle Version** | ${GRADLE_VER} |
+| **Android SDK** | compileSdk 35 / targetSdk 34 / minSdk 24 |
+| **NDK Version** | 26.1.10909125 |
+| **Build Tools** | 35.0.0 |
+| **APK Output** | \`${{ steps.apk_info.outputs.apk_path }}\` |
+| **APK Size** | ${{ steps.apk_info.outputs.apk_size }} |
+| **Signing** | debug keystore (androiddebugkey) |
+| **Hermes** | enabled |
+| **New Architecture** | disabled (Old Bridge) |
+
+## APK Validation — ${VALIDATION_STATUS}
+
+| Check | Result | Detail |
+|---|---|---|
+${VALIDATION_ROWS}
+
+## Build Process
+
+\`\`\`
+npm install                              # + postinstall patches (Camera1, expo-modules-core)
+npx expo prebuild --platform android --clean
+cd android
+./gradlew assembleRelease --stacktrace --no-daemon
+\`\`\`
+REPORT
+
+          echo "✓ BUILD_REPORT.md generated"
+          cat BUILD_REPORT.md
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 18. Upload APK artifact  (only reached if validation passed)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: sry-field-apk-${{ github.run_number }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 19. Upload build report  (always — captures validation failures too)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload Build Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-report-${{ github.run_number }}
+          path: BUILD_REPORT.md
+          retention-days: 30
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 20. Upload Gradle log (on Gradle build failure only)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload Gradle log (on failure)
+        if: failure() && steps.gradle_build.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-log-${{ github.run_number }}
+          path: build.log
+          retention-days: 7
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JOB: smoke-test
+# Launch an Android Emulator, install the release APK, verify startup stability.
+# Runs after the build job's APK validation passes.
+# ═══════════════════════════════════════════════════════════════════════════════
+  smoke-test:
+    name: Smoke Test (Emulator)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    env:
+      APP_ID: com.sarayatec.sryfield
+      MAIN_ACTIVITY: com.sarayatec.sryfield/.MainActivity
+      SMOKE_STABILITY_SECS: 30
+      API_LEVEL: 30
+      ARCH: x86_64
+
+    steps:
+      # ────────────────────────────────────────────────────────────────────────
+      # 1. Checkout (needed for artifact path references)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 2. Download APK artifact produced by the build job
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sry-field-apk-${{ github.run_number }}
+          path: artifacts/
+
+      - name: Locate APK
+        id: apk
+        run: |
+          APK=$(find artifacts/ -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "ERROR: No APK found in artifacts/"
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK located: $APK ($(du -sh "$APK" | cut -f1))"
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 3. Set up JDK (provides keytool; adb comes with pre-installed SDK)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 4. Enable KVM for hardware-accelerated emulator
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 5. Cache AVD so the emulator image is not re-downloaded every run
+      # ────────────────────────────────────────────────────────────────────────
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api${{ env.API_LEVEL }}-${{ env.ARCH }}-${{ runner.os }}-v1
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 6. Pre-build AVD snapshot if cache miss (speeds up cold boot)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Create AVD snapshot (cache miss only)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: ${{ env.ARCH }}
+          target: default
+          avd-name: smoke-test-avd
+          force-avd-creation: false
+          emulator-options: >-
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+            -camera-front none
+          disable-animations: false
+          script: echo "AVD snapshot created."
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 7. Launch emulator, install APK, run 30-second stability check
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Launch emulator and run smoke test
+        id: smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.API_LEVEL }}
+          arch: ${{ env.ARCH }}
+          target: default
+          avd-name: smoke-test-avd
+          force-avd-creation: false
+          emulator-options: >-
+            -no-snapshot-save
+            -no-window
+            -gpu swiftshader_indirect
+            -noaudio
+            -no-boot-anim
+            -camera-back none
+            -camera-front none
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            APK="${{ steps.apk.outputs.path }}"
+            APP_ID="${{ env.APP_ID }}"
+            MAIN_ACTIVITY="${{ env.MAIN_ACTIVITY }}"
+            STABILITY_SECS="${{ env.SMOKE_STABILITY_SECS }}"
+            LOGCAT_FILE="/tmp/smoke_logcat.txt"
+            LAUNCH_OUT="/tmp/launch_out.txt"
+            RESULTS_FILE="/tmp/smoke_results.md"
+
+            # ── Helpers ──────────────────────────────────────────────────────
+            pass() { echo "| $1 | ✅ PASS | $2 |" >> "$RESULTS_FILE"; }
+            fail() { echo "| $1 | ❌ FAIL | $2 |" >> "$RESULTS_FILE"; SMOKE_FAILED=1; }
+            info() { echo "[smoke] $*"; }
+
+            SMOKE_FAILED=0
+
+            echo "| Check | Result | Detail |" > "$RESULTS_FILE"
+            echo "|-------|--------|--------|" >> "$RESULTS_FILE"
+
+            # ── Wait for device to be fully booted ───────────────────────────
+            info "Waiting for device boot completion..."
+            adb wait-for-device
+            for i in $(seq 1 30); do
+              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              [ "$BOOT" = "1" ] && break
+              sleep 3
+            done
+            if [ "$BOOT" != "1" ]; then
+              fail "Device boot" "Emulator did not finish booting after 90s"
+              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+              exit 1
+            fi
+            pass "Device boot" "Emulator booted successfully"
+
+            # ── Clear logcat buffer before install ───────────────────────────
+            adb logcat -c
+            info "Logcat buffer cleared."
+
+            # ── Start logcat capture in background ───────────────────────────
+            adb logcat -v time > "$LOGCAT_FILE" 2>&1 &
+            LOGCAT_PID=$!
+            info "Logcat capture started (PID=$LOGCAT_PID)."
+
+            # ── Install APK ──────────────────────────────────────────────────
+            info "Installing APK: $APK"
+            if adb install -r -t "$APK" 2>&1; then
+              pass "APK install" "Installed without error"
+            else
+              fail "APK install" "adb install returned non-zero"
+              kill "$LOGCAT_PID" 2>/dev/null || true
+              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+              exit 1
+            fi
+
+            # ── Grant runtime permissions (pre-grant avoids permission dialogs) ──
+            info "Granting permissions..."
+            adb shell pm grant "$APP_ID" android.permission.CAMERA            2>/dev/null || true
+            adb shell pm grant "$APP_ID" android.permission.RECORD_AUDIO      2>/dev/null || true
+            adb shell pm grant "$APP_ID" android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
+            adb shell pm grant "$APP_ID" android.permission.READ_EXTERNAL_STORAGE 2>/dev/null || true
+            adb shell pm grant "$APP_ID" android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null || true
+            adb shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+
+            # ── Launch MainActivity ──────────────────────────────────────────
+            info "Launching $MAIN_ACTIVITY ..."
+            adb shell am start -W -n "$MAIN_ACTIVITY" > "$LAUNCH_OUT" 2>&1
+            cat "$LAUNCH_OUT"
+            LAUNCH_STATUS=$(grep "^Status:" "$LAUNCH_OUT" | awk '{print $2}')
+            LAUNCH_TIME=$(grep "^TotalTime:" "$LAUNCH_OUT" | awk '{print $2}')
+
+            if [ "$LAUNCH_STATUS" = "ok" ]; then
+              pass "MainActivity launch" "Status=ok, TotalTime=${LAUNCH_TIME}ms"
+            else
+              fail "MainActivity launch" "Status='${LAUNCH_STATUS}' (expected ok)"
+            fi
+
+            # ── Verify process is alive immediately after launch ─────────────
+            sleep 3
+            PID_INITIAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ' || true)
+            if [ -n "$PID_INITIAL" ]; then
+              pass "Initial process check" "App running with PID=$PID_INITIAL"
+            else
+              fail "Initial process check" "App process not found 3s after launch"
+              kill "$LOGCAT_PID" 2>/dev/null || true
+              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+              exit 1
+            fi
+
+            # ── Wait for stability period ────────────────────────────────────
+            info "App alive (PID=$PID_INITIAL). Waiting ${STABILITY_SECS}s for stability check..."
+            sleep "$STABILITY_SECS"
+
+            # ── Verify process survived the stability window ─────────────────
+            PID_FINAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ' || true)
+            if [ -n "$PID_FINAL" ]; then
+              pass "${STABILITY_SECS}s stability" "App still running (PID=$PID_FINAL)"
+            else
+              fail "${STABILITY_SECS}s stability" "App process died during stability window"
+            fi
+
+            # ── Stop logcat ──────────────────────────────────────────────────
+            sleep 1
+            kill "$LOGCAT_PID" 2>/dev/null || true
+            wait "$LOGCAT_PID" 2>/dev/null || true
+            info "Logcat capture stopped. Lines collected: $(wc -l < "$LOGCAT_FILE")"
+
+            # ── ANR check ────────────────────────────────────────────────────
+            if grep -qF "ANR in $APP_ID" "$LOGCAT_FILE" 2>/dev/null; then
+              fail "No ANR" "ANR detected in logcat"
+            else
+              pass "No ANR" "No Application Not Responding event detected"
+            fi
+
+            # ── Fatal Java exception check ───────────────────────────────────
+            if grep -qF "FATAL EXCEPTION" "$LOGCAT_FILE" 2>/dev/null; then
+              CRASH_LINE=$(grep -F "FATAL EXCEPTION" "$LOGCAT_FILE" | head -1)
+              fail "No fatal exception" "FATAL EXCEPTION: $CRASH_LINE"
+            else
+              pass "No fatal exception" "No FATAL EXCEPTION in logcat"
+            fi
+
+            # ── React Native bridge start ────────────────────────────────────
+            if grep -qE "ReactNative|Hermes" "$LOGCAT_FILE" 2>/dev/null; then
+              RN_LINE=$(grep -E "ReactNative|Hermes" "$LOGCAT_FILE" | head -1)
+              pass "React Native bridge" "RN/Hermes found: ${RN_LINE:0:100}"
+            else
+              fail "React Native bridge" "No ReactNative or Hermes log entries found"
+            fi
+
+            # ── Expo modules init ────────────────────────────────────────────
+            if grep -qiE "expo|ExpoModules" "$LOGCAT_FILE" 2>/dev/null; then
+              pass "Expo modules init" "Expo log entries found in logcat"
+            else
+              fail "Expo modules init" "No Expo module log entries found"
+            fi
+
+            # ── CameraService native module ──────────────────────────────────
+            if grep -qiE "CameraService|CameraFGS|CameraServiceModule" "$LOGCAT_FILE" 2>/dev/null; then
+              pass "CameraService module" "CameraService entries found in logcat"
+            else
+              fail "CameraService module" "No CameraService log entries (module may not have been invoked at startup)"
+            fi
+
+            # ── Lifecycle logs from our plugin ───────────────────────────────
+            if grep -qF "SRYLifecycle" "$LOGCAT_FILE" 2>/dev/null; then
+              LIFECYCLE_LINE=$(grep -F "SRYLifecycle" "$LOGCAT_FILE" | head -3 | tr '\n' ' ')
+              pass "SRY lifecycle logs" "${LIFECYCLE_LINE:0:120}"
+            else
+              fail "SRY lifecycle logs" "No SRYLifecycle entries — lifecycle plugin may not have injected"
+            fi
+
+            # ── JavaScript fatal error check ─────────────────────────────────
+            if grep -qiE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" 2>/dev/null; then
+              JS_ERR=$(grep -iE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" | head -1)
+              fail "No JS fatal error" "JS exception: ${JS_ERR:0:140}"
+            else
+              pass "No JS fatal error" "No fatal JavaScript exception detected"
+            fi
+
+            # ── Copy logcat and results to workspace ──────────────────────────
+            cp "$LOGCAT_FILE" smoke_logcat.txt
+            cp "$RESULTS_FILE" /tmp/smoke_results_final.md
+            info "Logcat saved to smoke_logcat.txt"
+
+            # ── Collect ANR traces if present ────────────────────────────────
+            adb shell ls /data/anr/ 2>/dev/null | grep -q "." && \
+              adb pull /data/anr/ anr_traces/ 2>/dev/null || true
+
+            # ── Exit with failure if any check failed ────────────────────────
+            if [ "$SMOKE_FAILED" = "1" ]; then
+              info "One or more smoke test checks FAILED."
+              exit 1
+            fi
+            info "All smoke test checks PASSED."
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 8. Generate SMOKE_TEST_REPORT.md
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Generate SMOKE_TEST_REPORT.md
+        if: always()
+        run: |
+          RESULTS_FILE="/tmp/smoke_results_final.md"
+          APK_PATH="${{ steps.apk.outputs.path }}"
+          APK_SIZE=$(du -sh "$APK_PATH" 2>/dev/null | cut -f1 || echo "unknown")
+          OUTCOME="${{ steps.smoke.outcome }}"
+
+          if [ "$OUTCOME" = "success" ]; then
+            OVERALL="✅ PASSED"
+          else
+            OVERALL="❌ FAILED"
+          fi
+
+          cat > SMOKE_TEST_REPORT.md << REPORT_EOF
+          # Smoke Test Report
+
+          **Overall:** $OVERALL
+          **Run:** #${{ github.run_number }} | **Commit:** \`${{ github.sha }}\`
+          **Branch:** \`${{ github.ref_name }}\` | **Triggered by:** \`${{ github.actor }}\`
+          **Emulator:** Android API ${{ env.API_LEVEL }} (${{ env.ARCH }}) — AOSP (no Google Play)
+          **APK:** \`$APK_PATH\` ($APK_SIZE)
+          **Stability window:** ${{ env.SMOKE_STABILITY_SECS }} seconds
+
+          ## Results
+
+          $(cat "$RESULTS_FILE" 2>/dev/null || echo "| No results captured | ❌ FAIL | Smoke step did not complete |")
+
+          ## Notes
+
+          - CameraService module check may show FAIL if the module only loads when streaming starts (not at app init). This is expected behaviour — treat it as a warning.
+          - Socket.IO connection to \`sry.sarayatec.com\` will not succeed from CI. This is expected and does not cause a crash.
+          - The app is tested on a headless emulator; no real camera or microphone feed is available.
+
+          ---
+          *Generated by GitHub Actions — android-build.yml smoke-test job*
+          REPORT_EOF
+          cat SMOKE_TEST_REPORT.md
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 9. Upload smoke test report (always)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload smoke test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-report-${{ github.run_number }}
+          path: SMOKE_TEST_REPORT.md
+          retention-days: 30
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 10. Upload logcat (always — critical for debugging failures)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload logcat
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logcat-${{ github.run_number }}
+          path: smoke_logcat.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 11. Upload ANR traces (only if present)
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Upload ANR traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: anr-traces-${{ github.run_number }}
+          path: anr_traces/
+          if-no-files-found: ignore
+          retention-days: 14

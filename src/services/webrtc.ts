@@ -12,6 +12,7 @@ import {
 import * as Notifications from 'expo-notifications';
 import { sryLog, setLogSessionId } from '../utils/log';
 import { useDebugStore } from '../stores/debugStore';
+import type { SignalingPhase } from '../stores/debugStore';
 import { writeCrashLog } from '../../modules/camera-service';
 
 const SIGNAL_URL = 'https://sry.sarayatec.com';
@@ -43,6 +44,38 @@ let _bgMonitorInterval: ReturnType<typeof setInterval> | null = null;
 let _isInPiP = false;
 // Guard so the DeviceEventEmitter listener is registered only once
 let _nativeListenerRegistered = false;
+
+// ── Reconnect-safe PeerConnection state machine ───────────────────────────────
+// See RECONNECT_STATE_MACHINE.md for full design.
+let _signalingPhase: SignalingPhase = 'idle';
+
+// Socket disconnect reasons that indicate a transient OS-induced drop.
+// These do NOT destroy the PeerConnection — we wait for Socket.IO to reconnect.
+const TRANSIENT_REASONS = new Set([
+  'transport close',  // TCP dropped — Android background network throttling
+  'transport error',  // engine.io-level WebSocket error
+  'ping timeout',     // server ping not answered in time (CPU busy / Doze)
+]);
+
+// How long to wait for Socket.IO to reconnect before tearing down WebRTC.
+// Must be longer than a few reconnection cycles (reconnectionDelay=3000 × 3 = 9 s).
+const RECONNECT_TIMEOUT_MS = 30_000;
+let _reconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+function _clearReconnectTimeout() {
+  if (_reconnectTimeoutId !== null) {
+    clearTimeout(_reconnectTimeoutId);
+    _reconnectTimeoutId = null;
+  }
+}
+
+function _setPhase(phase: SignalingPhase, reason: string) {
+  const prev = _signalingPhase;
+  _signalingPhase = phase;
+  useDebugStore.getState().setSignalingPhase(phase);
+  sryLog('Phase', '_setPhase', `${prev.toUpperCase()}→${phase.toUpperCase()}`, { reason });
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── ICE candidate queue ───────────────────────────────────────────────────────
 // Candidates that arrive before RTCPeerConnection exists or before
@@ -531,6 +564,8 @@ async function onAppStateChange(state: AppStateStatus) {
 
 export function startSignaling(employeeId: string, name: string) {
   sryLog('Socket', 'startSignaling', 'CALLED', { employeeId, name });
+  _clearReconnectTimeout();
+  _setPhase('idle', 'startSignaling');
 
   if (socket?.connected) {
     sryLog('Socket', 'startSignaling', 'ALREADY_CONNECTED', { socketId: socket.id });
@@ -577,7 +612,17 @@ export function startSignaling(employeeId: string, name: string) {
   sryLog('Socket', 'startSignaling', 'IO_CREATED', { url: SIGNAL_URL });
 
   socket.on('connect', () => {
-    sryLog('Socket', 'connect', 'CONNECTED', { socketId: socket?.id });
+    const wasReconnecting = _signalingPhase === 'socket_reconnecting';
+    _clearReconnectTimeout();
+    _setPhase('streaming', wasReconnecting ? 'socket_reconnected' : 'socket_connected');
+    if (wasReconnecting) {
+      sryLog('Socket', 'connect', 'RECONNECTED_PC_PRESERVED', {
+        socketId: socket?.id,
+        peersAlive: Object.keys(peerConns).length,
+      });
+    } else {
+      sryLog('Socket', 'connect', 'CONNECTED', { socketId: socket?.id });
+    }
     useDebugStore.getState().setSocket('connected', socket?.id ?? '');
     socket!.emit('employee:register', { employeeId, name });
     sryLog('Socket', 'connect', 'REGISTERED', { employeeId, name });
@@ -597,13 +642,41 @@ export function startSignaling(employeeId: string, name: string) {
       reason,
       peerCount: Object.keys(peerConns).length,
       peers: JSON.stringify(peerSnapshots),
+      socketActive: (socket as any)?.active ?? false,
     });
     useDebugStore.getState().setSocket('disconnected');
-    sryLog('Socket', 'disconnect', 'DISCONNECTED', {
-      reason,
-      peerCount: Object.keys(peerConns).length,
-    });
-    closeAllPeers();
+
+    // ── Reconnect-safe guard ───────────────────────────────────────────────────
+    // socket.active=true means Socket.IO will attempt to reconnect automatically.
+    // For transient OS-induced drops we preserve the PeerConnection and MediaStream
+    // while waiting for the socket to come back.  See RECONNECT_STATE_MACHINE.md.
+    const isTransient = TRANSIENT_REASONS.has(reason) && ((socket as any)?.active === true);
+    if (isTransient) {
+      _setPhase('socket_reconnecting', `transient_disconnect:${reason}`);
+      sryLog('Socket', 'disconnect', 'TRANSIENT_KEEP_PC_ALIVE', {
+        reason,
+        peerCount: Object.keys(peerConns).length,
+        timeoutMs: RECONNECT_TIMEOUT_MS,
+      });
+      // Start the teardown timer — if Socket.IO cannot reconnect in time, give up.
+      _reconnectTimeoutId = setTimeout(() => {
+        sryLog('Socket', 'disconnect', 'RECONNECT_TIMEOUT_EXPIRED', {
+          afterMs: RECONNECT_TIMEOUT_MS,
+          peerCount: Object.keys(peerConns).length,
+        });
+        _setPhase('teardown', 'reconnect_timeout');
+        closeAllPeers();
+      }, RECONNECT_TIMEOUT_MS);
+    } else {
+      // Permanent disconnect — tear down immediately.
+      sryLog('Socket', 'disconnect', 'PERMANENT_TEARDOWN', {
+        reason,
+        peerCount: Object.keys(peerConns).length,
+      });
+      _setPhase('teardown', `permanent_disconnect:${reason}`);
+      closeAllPeers();
+    }
+    // ─────────────────────────────────────────────────────────────────────────
   });
 
   // Engine.io 'close' fires before Socket.IO 'disconnect' — catches transport-level close
@@ -643,7 +716,10 @@ export function startSignaling(employeeId: string, name: string) {
   });
 
   socket.on('reconnect_failed', () => {
-    sryLog('Socket', 'reconnect_failed', 'EXHAUSTED', {});
+    sryLog('Socket', 'reconnect_failed', 'EXHAUSTED', { peerCount: Object.keys(peerConns).length });
+    _clearReconnectTimeout();
+    _setPhase('teardown', 'reconnect_failed');
+    closeAllPeers();
   });
 
   socket.on('stream:start', () => {
@@ -745,6 +821,8 @@ export function stopSignaling() {
     });
   }
 
+  _clearReconnectTimeout();
+  _setPhase('teardown', 'stopSignaling_logout');
   _fatalLog('stopSignaling()', '', null, {
     peerCount: Object.keys(peerConns).length,
     hasStream: !!localStream,
@@ -938,6 +1016,7 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     _assignPeer(adminSocketId, pc, _myPcId, 'handleOffer');
     isReconnecting = false; // new peer registered — safe to release stream again if needed
     _pcLog('RECONNECT_END', adminSocketId, _myPcId, 'handleOffer_new_peer_registered');
+    _setPhase('streaming', 'handleOffer_pc_created');
     _probePcT = Date.now();
     _probeIceLog(`PC created dropped_so_far=${_probeDropped} added_so_far=${_probeAdded} (candidates that arrived before this are lost)`);
     _sigLog(_myInvId, _myPcId, `PC_CREATED peerConnsHasMe=${peerConns[adminSocketId] === pc}`, pc);
@@ -1192,19 +1271,29 @@ function closePeer(adminSocketId: string) {
   if (remaining === 0) {
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
-      _fatalLog('setStreaming(false)', adminSocketId, peerConns[adminSocketId] as any ?? null, {
-        caller: 'closePeer',
-        remaining: Object.keys(peerConns).length,
-      });
-      sryLog('Service', 'closePeer', 'SET_STREAMING_FALSE', {});
-      setStreaming(false);
-      setAutoEnterPiP(false);
+      if (_signalingPhase === 'socket_reconnecting') {
+        // Do NOT clear camera_active during a transient socket reconnect.
+        // The camera is still running — clearing it would disable PiP.
+        sryLog('Service', 'closePeer', 'SKIP_SET_STREAMING_FALSE_RECONNECTING', {
+          phase: _signalingPhase,
+        });
+      } else {
+        _fatalLog('setStreaming(false)', adminSocketId, peerConns[adminSocketId] as any ?? null, {
+          caller: 'closePeer',
+          remaining: Object.keys(peerConns).length,
+          phase: _signalingPhase,
+        });
+        sryLog('Service', 'closePeer', 'SET_STREAMING_FALSE', { phase: _signalingPhase });
+        setStreaming(false);
+        setAutoEnterPiP(false);
+      }
     }
     // Stream intentionally kept alive: admin may reconnect imminently.
     // releaseStream() is only called in stopSignaling() on logout.
     sryLog('Camera', 'closePeer', 'STREAM_KEPT_ALIVE', {
       hasStream: !!localStream,
       streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+      phase: _signalingPhase,
     });
   }
 }
@@ -1228,17 +1317,27 @@ function closeAllPeers() {
   peerConns = {};
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
-    _fatalLog('setStreaming(false)', '', null, {
-      caller: 'closeAllPeers',
-      peersWere: count,
-    });
-    sryLog('Service', 'closeAllPeers', 'SET_STREAMING_FALSE', {});
-    setStreaming(false);
-    setAutoEnterPiP(false);
+    if (_signalingPhase === 'socket_reconnecting') {
+      // Called by the reconnect-timeout path after we already set phase=teardown,
+      // so this branch should never be reached.  Guard anyway for safety.
+      sryLog('Service', 'closeAllPeers', 'SKIP_SET_STREAMING_FALSE_RECONNECTING', {
+        phase: _signalingPhase,
+      });
+    } else {
+      _fatalLog('setStreaming(false)', '', null, {
+        caller: 'closeAllPeers',
+        peersWere: count,
+        phase: _signalingPhase,
+      });
+      sryLog('Service', 'closeAllPeers', 'SET_STREAMING_FALSE', { phase: _signalingPhase });
+      setStreaming(false);
+      setAutoEnterPiP(false);
+    }
   }
   // Stream kept alive — released only on logout (stopSignaling).
   sryLog('Camera', 'closeAllPeers', 'STREAM_KEPT_ALIVE', {
     hasStream: !!localStream,
     streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    phase: _signalingPhase,
   });
 }

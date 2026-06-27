@@ -5,6 +5,7 @@ const MAX_LINES = 500;
 export type MediaStatus = 'unknown' | 'ok' | 'denied' | 'error';
 export type FgsStatus = 'unknown' | 'running' | 'failed' | 'crashed';
 export type SocketStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+export type SignalingPhase = 'idle' | 'streaming' | 'socket_reconnecting' | 'teardown';
 export type TurnStatus = 'untested' | 'ok' | 'failed';
 
 interface DebugState {
@@ -19,6 +20,7 @@ interface DebugState {
   wakeLockHeld: boolean;
   sessionId: string;
   currentException: string | null;
+  signalingPhase: SignalingPhase;
   logs: string[];
 
   // Session diagnostics — reset each time an offer arrives
@@ -50,6 +52,7 @@ interface DebugActions {
   setWakeLock(held: boolean): void;
   setSessionId(id: string): void;
   setException(err: string | null): void;
+  setSignalingPhase(phase: SignalingPhase): void;
   clearLogs(): void;
 
   // Session diagnostics
@@ -73,6 +76,7 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
   wakeLockHeld: false,
   sessionId: 'none',
   currentException: null,
+  signalingPhase: 'idle',
   logs: [],
 
   offerReceived: false,
@@ -105,6 +109,7 @@ export const useDebugStore = create<DebugState & DebugActions>((set) => ({
   setWakeLock: (wakeLockHeld) => set({ wakeLockHeld }),
   setSessionId: (sessionId) => set({ sessionId }),
   setException: (currentException) => set({ currentException }),
+  setSignalingPhase: (signalingPhase) => set({ signalingPhase }),
   clearLogs: () => set({ logs: [] }),
 
   resetSessionDiag: () => set({

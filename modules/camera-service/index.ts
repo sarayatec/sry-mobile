@@ -53,6 +53,11 @@ export function writeDebugLog(line: string): void {
   try { mod?.writeDebugLog(line); } catch {}
 }
 
+/** Write all lines in a single bridge call — use before exportLogs() to flush in-memory logs. */
+export function writeBatchDebugLog(lines: string[]): void {
+  try { mod?.writeBatchDebugLog(lines); } catch {}
+}
+
 export function writeCrashLog(line: string): void {
   try { mod?.writeCrashLog(line); } catch {}
 }

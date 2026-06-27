@@ -143,6 +143,21 @@ class CameraServiceModule : Module() {
       } catch (_: Exception) {}
     }
 
+    // Write all in-memory log lines to debug.log in a single bridge call.
+    // This is more efficient than calling writeDebugLog() 500 times from JS.
+    Function("writeBatchDebugLog") { lines: List<Any?> ->
+      val ctx = appContext.reactContext ?: return@Function
+      try {
+        val f = java.io.File(ctx.filesDir, "debug.log")
+        val sb = StringBuilder()
+        for (item in lines) sb.append(item?.toString() ?: "").append('\n')
+        f.appendText(sb.toString())
+        modLog("writeBatchDebugLog", "WRITTEN", "lines=${lines.size}")
+      } catch (e: Exception) {
+        modLog("writeBatchDebugLog", "ERROR", "err=${e.message}")
+      }
+    }
+
     // Append a line (with optional stack trace marker) to crash.log.
     Function("writeCrashLog") { line: String ->
       val ctx = appContext.reactContext ?: return@Function

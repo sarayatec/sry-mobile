@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useState } from 'react';
 import {
   Modal,
   View,
@@ -10,6 +10,7 @@ import {
   PermissionsAndroid,
   Platform,
 } from 'react-native';
+import { flushLogsToFile, uploadDebugZip } from '../services/debug-sync';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useDebugStore } from '../stores/debugStore';
 import {
@@ -86,13 +87,17 @@ interface Props {
   onClose(): void;
 }
 
+type UploadStatus = 'idle' | 'flushing' | 'uploading' | 'ok' | 'err';
+
 export default function DebugPanel({ visible, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const logsRef = useRef<ScrollView>(null);
+  const [uploadStatus, setUploadStatus] = useState<UploadStatus>('idle');
+  const [uploadMsg,    setUploadMsg]    = useState('');
 
   const {
     cameraStatus, micStatus, fgsStatus, socketStatus, socketId,
-    iceState, turnState, wakeLockHeld, sessionId, currentException,
+    iceState, turnState, wakeLockHeld, sessionId, currentException, signalingPhase,
     logs, clearLogs,
     offerReceived, offerTs,
     remoteDescApplied, remoteDescTs, remoteDescSigState,
@@ -103,6 +108,8 @@ export default function DebugPanel({ visible, onClose }: Props) {
   } = useDebugStore();
 
   const handleExport = useCallback(async () => {
+    setUploadStatus('flushing');
+    setUploadMsg('');
     try {
       // Build runtime state snapshot
       const state = {
@@ -113,41 +120,45 @@ export default function DebugPanel({ visible, onClose }: Props) {
       };
       const stateJson = JSON.stringify(state, null, 2);
 
-      // Try to create zip in external files dir
+      // ① Flush in-memory logs to native debug.log before zipping.
+      //    A single bridge call writes all 500 lines atomically.
+      flushLogsToFile();
+
+      // ② Create zip in external files dir
       const zipPath = exportLogs(stateJson);
 
-      // Always share as text (works on any device without file manager)
-      const debugText = readDebugLog(500);
-      const crashText = readCrashLog();
+      // ③ Upload to server (auto-sync)
+      if (zipPath && !zipPath.startsWith('ERROR') && zipPath.trim() !== '') {
+        setUploadStatus('uploading');
+        const result = await uploadDebugZip(zipPath, sessionId, state as Record<string, unknown>);
+        if (result.ok) {
+          setUploadStatus('ok');
+          setUploadMsg(result.sessionKey ?? '');
+        } else {
+          setUploadStatus('err');
+          setUploadMsg(result.error ?? 'upload failed');
+        }
+      } else {
+        setUploadStatus('err');
+        setUploadMsg('zip creation failed: ' + zipPath);
+      }
+
+      // ④ Also share as plain text (backward-compatible, works offline)
+      const debugText  = readDebugLog(500);
+      const crashText  = readCrashLog();
       const deviceInfo = getDeviceInfo();
 
       const shareText = [
-        '=== DEVICE INFO ===',
-        deviceInfo,
-        '',
-        '=== RUNTIME STATE ===',
-        stateJson,
-        '',
-        '=== CRASH LOG ===',
-        crashText || '(empty)',
-        '',
-        '=== DEBUG LOG (last 500 lines) ===',
-        debugText || '(empty)',
+        '=== DEVICE INFO ===',    deviceInfo,         '',
+        '=== RUNTIME STATE ===',  stateJson,          '',
+        '=== CRASH LOG ===',      crashText || '(empty)', '',
+        '=== DEBUG LOG (last 500 lines) ===', debugText || '(empty)',
       ].join('\n');
 
-      await Share.share({
-        message: shareText,
-        title: 'SRY Debug Logs',
-      });
-
-      if (zipPath && !zipPath.startsWith('ERROR')) {
-        // Show zip path as additional info
-        Share.share({
-          message: `Zip saved to: ${zipPath}\n\nYou can access it via file manager under Android/data/com.sarayatec.sryfield/files/`,
-          title: 'SRY Zip Path',
-        }).catch(() => {});
-      }
+      await Share.share({ message: shareText, title: 'SRY Debug Logs' });
     } catch (err) {
+      setUploadStatus('err');
+      setUploadMsg(String(err));
       Share.share({ message: `Export failed: ${String(err)}`, title: 'Export Error' }).catch(() => {});
     }
   }, [cameraStatus, micStatus, fgsStatus, socketStatus, socketId, iceState, turnState, sessionId, currentException, logs]);
@@ -239,6 +250,11 @@ export default function DebugPanel({ visible, onClose }: Props) {
           <Row label="TURN"               value={turnState}     color={turnState === 'ok' ? 'ok' : turnState === 'failed' ? 'err' : 'dim'} />
           <Row label="WakeLock"           value={wakeLockHeld ? 'held' : 'not held'} color={wakeLockHeld ? 'ok' : 'warn'} />
           <Row label="Session ID"         value={sessionId === 'none' ? 'none' : sessionId.substring(0, 8) + '…'} />
+          <Row
+            label="Signaling Phase"
+            value={signalingPhase}
+            color={signalingPhase === 'streaming' ? 'ok' : signalingPhase === 'socket_reconnecting' ? 'warn' : signalingPhase === 'teardown' ? 'err' : 'dim'}
+          />
 
           {/* Exception */}
           {currentException ? (
@@ -283,8 +299,26 @@ export default function DebugPanel({ visible, onClose }: Props) {
 
           {/* Action buttons */}
           <View style={styles.actions}>
-            <TouchableOpacity onPress={handleExport} style={[styles.btn, styles.btnExport]}>
-              <Text style={styles.btnText}>تصدير السجلات (debug.zip)</Text>
+            {uploadStatus !== 'idle' && (
+              <View style={[styles.syncBadge, uploadStatus === 'ok' ? styles.syncOk : uploadStatus === 'err' ? styles.syncErr : styles.syncPending]}>
+                <Text style={styles.syncText}>
+                  {uploadStatus === 'flushing'  ? 'كتابة السجلات…'  :
+                   uploadStatus === 'uploading' ? 'رفع إلى الخادم…' :
+                   uploadStatus === 'ok'        ? `تم الرفع ✓  ${uploadMsg}` :
+                   `فشل الرفع: ${uploadMsg}`}
+                </Text>
+              </View>
+            )}
+            <TouchableOpacity
+              onPress={handleExport}
+              disabled={uploadStatus === 'flushing' || uploadStatus === 'uploading'}
+              style={[styles.btn, styles.btnExport, (uploadStatus === 'flushing' || uploadStatus === 'uploading') && { opacity: 0.6 }]}
+            >
+              <Text style={styles.btnText}>
+                {uploadStatus === 'flushing' || uploadStatus === 'uploading'
+                  ? 'جارٍ التصدير…'
+                  : 'تصدير السجلات (debug.zip)'}
+              </Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={handleClear} style={[styles.btn, styles.btnClear]}>
               <Text style={styles.btnText}>مسح السجلات</Text>
@@ -332,4 +366,9 @@ const styles = StyleSheet.create({
   btnExport:     { backgroundColor: '#1d4ed8' },
   btnClear:      { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#475569' },
   btnText:       { color: '#e2e8f0', fontSize: 14, fontWeight: '600' },
+  syncBadge:     { borderRadius: 6, paddingHorizontal: 10, paddingVertical: 6 },
+  syncOk:        { backgroundColor: '#14532d' },
+  syncErr:       { backgroundColor: '#450a0a' },
+  syncPending:   { backgroundColor: '#1e3a5f' },
+  syncText:      { color: '#e2e8f0', fontSize: 12, fontFamily: 'monospace' },
 });
