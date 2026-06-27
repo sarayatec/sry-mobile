@@ -12,8 +12,8 @@ class PipModule : Module() {
 
     // Enter PiP manually (called from JS when app goes to background)
     Function("enter") {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function
-      val activity = appContext.currentActivity ?: return@Function
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function Unit
+      val activity = appContext.currentActivity ?: return@Function Unit
       activity.runOnUiThread {
         try {
           val builder = PictureInPictureParams.Builder()
