@@ -9,6 +9,9 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.facebook.react.ReactApplication
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.modules.core.DeviceEventManagerModule
 
 class CameraForegroundService : Service() {
 
@@ -25,11 +28,30 @@ class CameraForegroundService : Service() {
     }
   }
 
+  // Mirror to in-app Debug Panel via RCTDeviceEventEmitter.
+  // Wrapped in try/catch — ReactContext may be null if bridge is tearing down.
+  private fun emitNativeEvent(method: String, state: String, extra: String = "") {
+    try {
+      val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+      val ctx = (application as? ReactApplication)
+        ?.reactNativeHost?.reactInstanceManager?.currentReactContext ?: return
+      val params = Arguments.createMap().apply {
+        putString("ts", ts)
+        putString("src", "CameraFGS")
+        putString("method", method)
+        putString("extra", "$state $extra".trim())
+      }
+      ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+        ?.emit("SRYNativeEvent", params)
+    } catch (_: Exception) {}
+  }
+
   private var wakeLock: PowerManager.WakeLock? = null
 
   override fun onCreate() {
     super.onCreate()
     srvLog("onCreate", "CALLED")
+    emitNativeEvent("onCreate", "CALLED")
     createChannel()
     srvLog("onCreate", "CHANNEL_CREATED")
   }
@@ -95,6 +117,7 @@ class CameraForegroundService : Service() {
     }
 
     srvLog("onStartCommand", "RETURNING_START_STICKY", "")
+    emitNativeEvent("onStartCommand", "STARTED", "startId=$startId wakeLockHeld=${wakeLock?.isHeld}")
     return START_STICKY
   }
 
@@ -113,18 +136,21 @@ class CameraForegroundService : Service() {
     wakeLock = null
     stopForeground(true)
     srvLog("onDestroy", "FOREGROUND_STOPPED", "")
+    emitNativeEvent("onDestroy", "STOPPED", "sessionId=${SRYSession.sessionId.take(8)}")
     super.onDestroy()
   }
 
   override fun onTaskRemoved(rootIntent: Intent?) {
-    srvLog("onTaskRemoved", "CALLED",
-      "rootIntent=${rootIntent?.action} wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}")
+    val extra = "rootIntent=${rootIntent?.action} wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}"
+    srvLog("onTaskRemoved", "CALLED", extra)
+    emitNativeEvent("onTaskRemoved", "CALLED", extra)
     super.onTaskRemoved(rootIntent)
   }
 
   override fun onLowMemory() {
-    srvLog("onLowMemory", "CALLED",
-      "wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}")
+    val extra = "wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}"
+    srvLog("onLowMemory", "CALLED", extra)
+    emitNativeEvent("onLowMemory", "CALLED", extra)
     super.onLowMemory()
   }
 

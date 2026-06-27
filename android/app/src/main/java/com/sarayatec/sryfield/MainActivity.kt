@@ -14,12 +14,32 @@ import expo.modules.ReactActivityDelegateWrapper
 
 class MainActivity : ReactActivity() {
 
-  // SRY_LIFECYCLE_LOGS — debug instrumentation (logcat tag: SRYLifecycle)
+  // ── Native → Debug Panel bridge ──────────────────────────────────────────
+  // Emits the event over RCTDeviceEventEmitter so the JS Debug Panel can
+  // display it without needing ADB.  Falls back to logcat-only on any error.
+  private fun emitNativeEvent(method: String, extra: String, ts: String) {
+    try {
+      val ctx = (application as? com.facebook.react.ReactApplication)
+        ?.reactNativeHost?.reactInstanceManager?.currentReactContext ?: return
+      val params = com.facebook.react.bridge.Arguments.createMap().apply {
+        putString("ts", ts)
+        putString("src", "MainActivity")
+        putString("method", method)
+        putString("extra", extra)
+      }
+      ctx.getJSModule(
+        com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter::class.java
+      )?.emit("SRYNativeEvent", params)
+    } catch (_: Exception) {}
+  }
+
+  // SRY_LIFECYCLE_LOGS — logcat (tag: SRYLifecycle) + in-app Debug Panel
   private fun sryLifecycleLog(method: String, extra: String = "") {
     val ts  = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
     val t   = Thread.currentThread().name
     val sid = try { com.sarayatec.cameraservice.SRYSession.short() } catch (e: Exception) { "none" }
     android.util.Log.d("SRYLifecycle", "[$ts] [$t] [Session:$sid] [MainActivity] [$method] CALLED $extra")
+    emitNativeEvent(method, extra, ts)
   }
   override fun onStart() {
     super.onStart()

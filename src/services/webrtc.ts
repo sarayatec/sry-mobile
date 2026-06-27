@@ -1,4 +1,4 @@
-import { AppState, AppStateStatus, Platform } from 'react-native';
+import { AppState, AppStateStatus, DeviceEventEmitter, Platform } from 'react-native';
 import { io, Socket } from 'socket.io-client';
 import { enterPiP, setAutoEnterPiP } from '../../modules/pip';
 import { startSessionService, stopSessionService, setStreaming, setNativeSessionId } from '../../modules/camera-service';
@@ -39,6 +39,10 @@ let bgNotifId: string | null = null;
 let isReconnecting = false;
 // Background track monitor — polls readyState every 5s while in background
 let _bgMonitorInterval: ReturnType<typeof setInterval> | null = null;
+// Mirrors the native isInPictureInPictureMode value — updated by SRYNativeEvent listener
+let _isInPiP = false;
+// Guard so the DeviceEventEmitter listener is registered only once
+let _nativeListenerRegistered = false;
 
 // ── ICE candidate queue ───────────────────────────────────────────────────────
 // Candidates that arrive before RTCPeerConnection exists or before
@@ -238,17 +242,37 @@ async function hideBackgroundNotif() {
 function attachTrackListeners(stream: MediaStream) {
   stream.getTracks().forEach((track: any) => {
     track.addEventListener('ended', () => {
-      sryLog('Camera', 'track', 'TRACK_ENDED', {
+      const videoTrack: any = localStream?.getVideoTracks()[0];
+      const audioTrack: any = localStream?.getAudioTracks()[0];
+      // Collect sender + receiver state for every active peer
+      const peerSnapshots = Object.entries(peerConns).map(([peerId, pc]: [string, any]) => {
+        const senders: any[] = pc.getSenders?.() ?? [];
+        const receivers: any[] = pc.getReceivers?.() ?? [];
+        return {
+          peer: peerId.slice(-6),
+          iceState: pc.iceConnectionState ?? 'unknown',
+          connState: pc.connectionState ?? 'unknown',
+          senderTracks: senders.map((s: any) => `${s.track?.kind ?? '?'}:${s.track?.readyState ?? '?'}`).join('|'),
+          receiverTracks: receivers.map((r: any) => `${r.track?.kind ?? '?'}:${r.track?.readyState ?? '?'}`).join('|'),
+        };
+      });
+      sryLog('Camera', 'track', 'TRACK_ENDED ◀ FIRST_KILL_EVENT', {
+        // The track that died
         kind: track.kind,
         id: (track.id ?? '').slice(0, 8),
         readyState: track.readyState,
         enabled: track.enabled,
         muted: track.muted,
+        // JS AppState + PiP at the moment of death
         appState: AppState.currentState,
+        isInPiP: _isInPiP,
+        // Remaining stream state
+        videoReadyState: videoTrack?.readyState ?? 'none',
+        audioReadyState: audioTrack?.readyState ?? 'none',
+        streamActive: (localStream as any)?.active ?? false,
+        // WebRTC peer state
         peerCount: Object.keys(peerConns).length,
-        iceStates: Object.entries(peerConns)
-          .map(([id, pc]) => `${id.slice(-4)}:${(pc as any).iceConnectionState}`)
-          .join(','),
+        peers: JSON.stringify(peerSnapshots),
       });
     });
     track.addEventListener('mute', () => {
@@ -418,6 +442,21 @@ export function startSignaling(employeeId: string, name: string) {
   useDebugStore.getState().setSocket('connecting');
   appStateSubscription = AppState.addEventListener('change', onAppStateChange);
   sryLog('AppState', 'startSignaling', 'APPSTATE_LISTENER_REGISTERED', {});
+
+  // Register native→Debug Panel bridge exactly once per app session
+  if (!_nativeListenerRegistered) {
+    _nativeListenerRegistered = true;
+    DeviceEventEmitter.addListener('SRYNativeEvent', (data: {ts: string; src: string; method: string; extra: string}) => {
+      const line = `[NATIVE ${data.ts}] [${data.src}] ${data.method} ${data.extra}`;
+      useDebugStore.getState().addLog(line);
+      // Track PiP state so JS-side TRACK_ENDED snapshot can include it
+      if (data.method === 'onPictureInPictureModeChanged') {
+        _isInPiP = data.extra.includes('inPiP=true');
+        sryLog('Native', 'PiPStateSync', _isInPiP ? 'IN_PIP' : 'EXITED_PIP', { raw: data.extra });
+      }
+    });
+    sryLog('Native', 'startSignaling', 'NATIVE_EVENT_LISTENER_REGISTERED', {});
+  }
 
   socket = io(SIGNAL_URL, {
     transports: ['websocket'],
