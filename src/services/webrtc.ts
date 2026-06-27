@@ -17,8 +17,14 @@ import { writeCrashLog } from '../../modules/camera-service';
 const SIGNAL_URL = 'https://sry.sarayatec.com';
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'turn:152.42.210.72:3478', username: 'sryuser', credential: 'Sry2024turn' },
-  { urls: 'turns:152.42.210.72:5349', username: 'sryuser', credential: 'Sry2024turn' },
+  {
+    urls: [
+      'turn:152.42.210.72:3478',
+      'turn:152.42.210.72:3478?transport=tcp',
+    ],
+    username: 'sryuser',
+    credential: 'Sry2024turn',
+  },
 ];
 
 let socket: Socket | null = null;
