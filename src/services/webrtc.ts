@@ -37,6 +37,8 @@ let bgNotifId: string | null = null;
 // Guard: prevents releaseStream() during peer reconnect (handleOffer closes old peer
 // which fires connectionstatechange → closePeer before new peer is established).
 let isReconnecting = false;
+// Background track monitor — polls readyState every 5s while in background
+let _bgMonitorInterval: ReturnType<typeof setInterval> | null = null;
 
 // ── ICE candidate queue ───────────────────────────────────────────────────────
 // Candidates that arrive before RTCPeerConnection exists or before
@@ -230,14 +232,128 @@ async function hideBackgroundNotif() {
   bgNotifId = null;
 }
 
+// ── Background camera continuity instrumentation ──────────────────────────────
+// Attaches ended/mute/unmute listeners to every track on a stream so we can
+// identify the FIRST event that kills the feed while the app is backgrounded.
+function attachTrackListeners(stream: MediaStream) {
+  stream.getTracks().forEach((track: any) => {
+    track.addEventListener('ended', () => {
+      sryLog('Camera', 'track', 'TRACK_ENDED', {
+        kind: track.kind,
+        id: (track.id ?? '').slice(0, 8),
+        readyState: track.readyState,
+        enabled: track.enabled,
+        muted: track.muted,
+        appState: AppState.currentState,
+        peerCount: Object.keys(peerConns).length,
+        iceStates: Object.entries(peerConns)
+          .map(([id, pc]) => `${id.slice(-4)}:${(pc as any).iceConnectionState}`)
+          .join(','),
+      });
+    });
+    track.addEventListener('mute', () => {
+      sryLog('Camera', 'track', 'TRACK_MUTED', {
+        kind: track.kind,
+        readyState: track.readyState,
+        appState: AppState.currentState,
+      });
+    });
+    track.addEventListener('unmute', () => {
+      sryLog('Camera', 'track', 'TRACK_UNMUTED', {
+        kind: track.kind,
+        readyState: track.readyState,
+        appState: AppState.currentState,
+      });
+    });
+  });
+  sryLog('Camera', 'attachTrackListeners', 'ATTACHED', {
+    streamId: (stream as any).id?.slice(0, 8) ?? 'unknown',
+    trackKinds: stream.getTracks().map((t: any) => t.kind).join(','),
+  });
+}
+
+function _snapshotSenders(label: string) {
+  Object.entries(peerConns).forEach(([peerId, pc]) => {
+    const senders: any[] = (pc as any).getSenders?.() ?? [];
+    senders.forEach((sender: any, i: number) => {
+      sryLog('WebRTC', 'sender', label, {
+        peerId: peerId.slice(-6),
+        idx: i,
+        kind: sender.track?.kind ?? 'none',
+        readyState: sender.track?.readyState ?? 'none',
+        enabled: sender.track?.enabled ?? false,
+        muted: sender.track?.muted ?? false,
+        iceState: (pc as any).iceConnectionState ?? 'unknown',
+        connState: (pc as any).connectionState ?? 'unknown',
+      });
+    });
+    if (senders.length === 0) {
+      sryLog('WebRTC', 'sender', label, {
+        peerId: peerId.slice(-6),
+        senderCount: 0,
+        iceState: (pc as any).iceConnectionState ?? 'unknown',
+      });
+    }
+  });
+}
+
+function startBgMonitor() {
+  if (_bgMonitorInterval) return;
+  sryLog('BgMonitor', 'startBgMonitor', 'STARTED', {});
+  _bgMonitorInterval = setInterval(() => {
+    const videoTrack: any = localStream?.getVideoTracks()[0];
+    const audioTrack: any = localStream?.getAudioTracks()[0];
+    const appState = AppState.currentState;
+    sryLog('BgMonitor', 'poll', 'TRACK_POLL', {
+      appState,
+      streamActive: (localStream as any)?.active ?? false,
+      videoReadyState: videoTrack?.readyState ?? 'none',
+      videoEnabled: videoTrack?.enabled ?? false,
+      videoMuted: videoTrack?.muted ?? false,
+      audioReadyState: audioTrack?.readyState ?? 'none',
+      peerCount: Object.keys(peerConns).length,
+      iceStates: Object.entries(peerConns)
+        .map(([id, pc]) => `${id.slice(-4)}:${(pc as any).iceConnectionState}`)
+        .join(','),
+      connStates: Object.entries(peerConns)
+        .map(([id, pc]) => `${id.slice(-4)}:${(pc as any).connectionState}`)
+        .join(','),
+    });
+    // Snapshot sender tracks too — catches the moment sender.track goes to 'ended'
+    _snapshotSenders('BG_POLL');
+    // If track died while in background — this is the root event we're hunting
+    if (videoTrack?.readyState === 'ended') {
+      sryLog('BgMonitor', 'poll', 'VIDEO_ENDED_DETECTED_STOPPING_MONITOR', { appState });
+      stopBgMonitor();
+    }
+  }, 5000);
+}
+
+function stopBgMonitor() {
+  if (_bgMonitorInterval) {
+    clearInterval(_bgMonitorInterval);
+    _bgMonitorInterval = null;
+    sryLog('BgMonitor', 'stopBgMonitor', 'STOPPED', {});
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function onAppStateChange(state: AppStateStatus) {
   const peerCount = Object.keys(peerConns).length;
+  const videoTrack: any = localStream?.getVideoTracks()[0];
+  const audioTrack: any = localStream?.getAudioTracks()[0];
   sryLog('AppState', 'onAppStateChange', state.toUpperCase(), {
     peerCount,
     hasStream: !!localStream,
-    streamLive: localStream?.getVideoTracks().some(t => t.readyState === 'live') ?? false,
+    streamActive: (localStream as any)?.active ?? false,
+    videoReadyState: videoTrack?.readyState ?? 'none',
+    videoEnabled: videoTrack?.enabled ?? false,
+    videoMuted: videoTrack?.muted ?? false,
+    audioReadyState: audioTrack?.readyState ?? 'none',
     socketConnected: socket?.connected ?? false,
   });
+  // Snapshot sender state at the instant of AppState change
+  _snapshotSenders(`APPSTATE_${state.toUpperCase()}`);
 
   // With Camera1 forced (see scripts/patch-webrtc-camera1.js) + camera-type
   // foreground service + WakeLock, capture continues with screen off and in
@@ -258,15 +374,20 @@ async function onAppStateChange(state: AppStateStatus) {
           enterPiP();
         }, 150);
       }
+      // Start background monitor — polls track state every 5s to catch the exact moment it dies
+      startBgMonitor();
     } else {
       sryLog('AppState', 'onAppStateChange', 'NO_PEERS_BACKGROUND', {});
     }
     // No releaseStream() — stream stays alive for next offer even with no peers.
   } else if (state === 'active') {
+    stopBgMonitor();
+    // Snapshot sender state immediately on return to foreground
+    _snapshotSenders('APPSTATE_ACTIVE_RETURN');
     hideBackgroundNotif();
     if (Platform.OS === 'android' && peerCount > 0) {
       // Re-enable tracks in case Android disabled them; do NOT close the peer.
-      localStream?.getTracks().forEach(t => { t.enabled = true; });
+      localStream?.getTracks().forEach((t: any) => { t.enabled = true; });
       sryLog('AppState', 'onAppStateChange', 'TRACKS_RE_ENABLED_ACTIVE', { peerCount });
     } else if (Platform.OS === 'android' && peerCount === 0 && socket?.connected) {
       // Returned to foreground with no active stream — ask admin to re-offer.
@@ -491,6 +612,8 @@ function acquireStream(facingMode: 'environment' | 'user' = currentFacingMode): 
       videoState: stream.getVideoTracks()[0]?.readyState ?? 'none',
       audioState: stream.getAudioTracks()[0]?.readyState ?? 'none',
     });
+    // Attach ended/mute/unmute listeners so we catch the FIRST event that kills the track
+    attachTrackListeners(stream);
     useDebugStore.getState().setCamera('ok');
     useDebugStore.getState().setMic(stream.getAudioTracks().length > 0 ? 'ok' : 'error');
     return stream;

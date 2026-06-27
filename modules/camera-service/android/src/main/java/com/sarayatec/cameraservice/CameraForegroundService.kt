@@ -116,6 +116,18 @@ class CameraForegroundService : Service() {
     super.onDestroy()
   }
 
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    srvLog("onTaskRemoved", "CALLED",
+      "rootIntent=${rootIntent?.action} wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}")
+    super.onTaskRemoved(rootIntent)
+  }
+
+  override fun onLowMemory() {
+    srvLog("onLowMemory", "CALLED",
+      "wakeLockHeld=${wakeLock?.isHeld} sessionId=${SRYSession.sessionId}")
+    super.onLowMemory()
+  }
+
   override fun onBind(intent: Intent?): IBinder? = null
 
   private fun createChannel() {
