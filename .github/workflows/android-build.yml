@@ -545,6 +545,7 @@ jobs:
             exit 1
           fi
           echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
           echo "APK located: $APK ($(du -sh "$APK" | cut -f1))"
 
       # ────────────────────────────────────────────────────────────────────────
@@ -601,7 +602,172 @@ jobs:
           script: echo "AVD snapshot created."
 
       # ────────────────────────────────────────────────────────────────────────
-      # 7. Launch emulator, install APK, run 30-second stability check
+      # 7. Write smoke test script to a file so the emulator runner executes
+      #    it as one unit (the action runs each script: line as a separate
+      #    /usr/bin/sh -c call, so variables don't persist between lines).
+      # ────────────────────────────────────────────────────────────────────────
+      - name: Write smoke test script
+        run: |
+          cat > /tmp/smoke_test.sh << 'SCRIPT_EOF'
+          #!/bin/sh
+          set -eu
+          APK="${APK_PATH}"
+          APP_ID="${APP_ID}"
+          MAIN_ACTIVITY="${MAIN_ACTIVITY}"
+          STABILITY_SECS="${SMOKE_STABILITY_SECS}"
+          LOGCAT_FILE="/tmp/smoke_logcat.txt"
+          LAUNCH_OUT="/tmp/launch_out.txt"
+          RESULTS_FILE="/tmp/smoke_results.md"
+
+          pass() { printf '| %s | PASS | %s |\n' "$1" "$2" >> "$RESULTS_FILE"; }
+          fail() { printf '| %s | FAIL | %s |\n' "$1" "$2" >> "$RESULTS_FILE"; SMOKE_FAILED=1; }
+          info() { printf '[smoke] %s\n' "$*"; }
+
+          SMOKE_FAILED=0
+
+          printf '| Check | Result | Detail |\n' > "$RESULTS_FILE"
+          printf '|-------|--------|--------|\n' >> "$RESULTS_FILE"
+
+          info "Waiting for device boot completion..."
+          adb wait-for-device
+          i=0; while [ $i -lt 30 ]; do
+            BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') || BOOT=""
+            [ "$BOOT" = "1" ] && break
+            sleep 3; i=$((i+1))
+          done
+          if [ "$BOOT" != "1" ]; then
+            fail "Device boot" "Emulator did not finish booting after 90s"
+            echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+            exit 1
+          fi
+          pass "Device boot" "Emulator booted successfully"
+
+          adb logcat -c
+          info "Logcat buffer cleared."
+
+          adb logcat -v time > "$LOGCAT_FILE" 2>&1 &
+          LOGCAT_PID=$!
+          info "Logcat capture started (PID=$LOGCAT_PID)."
+
+          info "Installing APK: $APK"
+          if adb install -r -t "$APK" 2>&1; then
+            pass "APK install" "Installed without error"
+          else
+            fail "APK install" "adb install returned non-zero"
+            kill "$LOGCAT_PID" 2>/dev/null || true
+            echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+          info "Granting permissions..."
+          adb shell pm grant "$APP_ID" android.permission.CAMERA 2>/dev/null || true
+          adb shell pm grant "$APP_ID" android.permission.RECORD_AUDIO 2>/dev/null || true
+          adb shell pm grant "$APP_ID" android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
+          adb shell pm grant "$APP_ID" android.permission.READ_EXTERNAL_STORAGE 2>/dev/null || true
+          adb shell pm grant "$APP_ID" android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null || true
+          adb shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
+
+          info "Launching $MAIN_ACTIVITY ..."
+          adb shell am start -W -n "$MAIN_ACTIVITY" > "$LAUNCH_OUT" 2>&1 || true
+          cat "$LAUNCH_OUT"
+          LAUNCH_STATUS=$(grep "^Status:" "$LAUNCH_OUT" | awk '{print $2}') || LAUNCH_STATUS=""
+          LAUNCH_TIME=$(grep "^TotalTime:" "$LAUNCH_OUT" | awk '{print $2}') || LAUNCH_TIME="?"
+          if [ "$LAUNCH_STATUS" = "ok" ]; then
+            pass "MainActivity launch" "Status=ok TotalTime=${LAUNCH_TIME}ms"
+          else
+            fail "MainActivity launch" "Status=${LAUNCH_STATUS} (expected ok)"
+          fi
+
+          sleep 3
+          PID_INITIAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ') || PID_INITIAL=""
+          if [ -n "$PID_INITIAL" ]; then
+            pass "Initial process check" "App running PID=$PID_INITIAL"
+          else
+            fail "Initial process check" "App process not found 3s after launch"
+            kill "$LOGCAT_PID" 2>/dev/null || true
+            echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+          info "App alive PID=$PID_INITIAL. Waiting ${STABILITY_SECS}s..."
+          sleep "$STABILITY_SECS"
+
+          PID_FINAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ') || PID_FINAL=""
+          if [ -n "$PID_FINAL" ]; then
+            pass "${STABILITY_SECS}s stability" "App still running PID=$PID_FINAL"
+          else
+            fail "${STABILITY_SECS}s stability" "App process died during stability window"
+          fi
+
+          sleep 1
+          kill "$LOGCAT_PID" 2>/dev/null || true
+          wait "$LOGCAT_PID" 2>/dev/null || true
+          info "Logcat stopped. Lines: $(wc -l < "$LOGCAT_FILE")"
+
+          if grep -qF "ANR in $APP_ID" "$LOGCAT_FILE" 2>/dev/null; then
+            fail "No ANR" "ANR detected in logcat"
+          else
+            pass "No ANR" "No ANR event detected"
+          fi
+
+          if grep -qF "FATAL EXCEPTION" "$LOGCAT_FILE" 2>/dev/null; then
+            CRASH_LINE=$(grep -F "FATAL EXCEPTION" "$LOGCAT_FILE" | head -1)
+            fail "No fatal exception" "FATAL EXCEPTION: $CRASH_LINE"
+          else
+            pass "No fatal exception" "No FATAL EXCEPTION in logcat"
+          fi
+
+          if grep -qE "ReactNative|Hermes" "$LOGCAT_FILE" 2>/dev/null; then
+            RN_LINE=$(grep -E "ReactNative|Hermes" "$LOGCAT_FILE" | head -1)
+            pass "React Native bridge" "RN/Hermes found in logcat"
+          else
+            fail "React Native bridge" "No ReactNative or Hermes log entries found"
+          fi
+
+          if grep -qiE "expo|ExpoModules" "$LOGCAT_FILE" 2>/dev/null; then
+            pass "Expo modules init" "Expo log entries found in logcat"
+          else
+            fail "Expo modules init" "No Expo module log entries found"
+          fi
+
+          if grep -qiE "CameraService|CameraFGS|CameraServiceModule" "$LOGCAT_FILE" 2>/dev/null; then
+            pass "CameraService module" "CameraService entries found in logcat"
+          else
+            fail "CameraService module" "No CameraService log entries (expected if not invoked at startup)"
+          fi
+
+          if grep -qF "SRYLifecycle" "$LOGCAT_FILE" 2>/dev/null; then
+            pass "SRY lifecycle logs" "SRYLifecycle entries found"
+          else
+            fail "SRY lifecycle logs" "No SRYLifecycle entries - lifecycle plugin may not have injected"
+          fi
+
+          if grep -qiE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" 2>/dev/null; then
+            JS_ERR=$(grep -iE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" | head -1)
+            fail "No JS fatal error" "JS exception detected"
+          else
+            pass "No JS fatal error" "No fatal JavaScript exception detected"
+          fi
+
+          cp "$LOGCAT_FILE" smoke_logcat.txt
+          cp "$RESULTS_FILE" /tmp/smoke_results_final.md
+          info "Logcat saved to smoke_logcat.txt"
+
+          adb shell ls /data/anr/ 2>/dev/null | grep -q "." && \
+            adb pull /data/anr/ anr_traces/ 2>/dev/null || true
+
+          if [ "$SMOKE_FAILED" = "1" ]; then
+            info "One or more smoke test checks FAILED."
+            exit 1
+          fi
+          info "All smoke test checks PASSED."
+          SCRIPT_EOF
+          chmod +x /tmp/smoke_test.sh
+        env:
+          APK_PATH: ${{ steps.apk.outputs.path }}
+
+      # ────────────────────────────────────────────────────────────────────────
+      # 8. Launch emulator, install APK, run 30-second stability check
       # ────────────────────────────────────────────────────────────────────────
       - name: Launch emulator and run smoke test
         id: smoke
@@ -621,181 +787,7 @@ jobs:
             -camera-back none
             -camera-front none
           disable-animations: true
-          script: |
-            set -eu
-            APK="${{ steps.apk.outputs.path }}"
-            APP_ID="${{ env.APP_ID }}"
-            MAIN_ACTIVITY="${{ env.MAIN_ACTIVITY }}"
-            STABILITY_SECS="${{ env.SMOKE_STABILITY_SECS }}"
-            LOGCAT_FILE="/tmp/smoke_logcat.txt"
-            LAUNCH_OUT="/tmp/launch_out.txt"
-            RESULTS_FILE="/tmp/smoke_results.md"
-
-            # ── Helpers ──────────────────────────────────────────────────────
-            pass() { echo "| $1 | ✅ PASS | $2 |" >> "$RESULTS_FILE"; }
-            fail() { echo "| $1 | ❌ FAIL | $2 |" >> "$RESULTS_FILE"; SMOKE_FAILED=1; }
-            info() { echo "[smoke] $*"; }
-
-            SMOKE_FAILED=0
-
-            echo "| Check | Result | Detail |" > "$RESULTS_FILE"
-            echo "|-------|--------|--------|" >> "$RESULTS_FILE"
-
-            # ── Wait for device to be fully booted ───────────────────────────
-            info "Waiting for device boot completion..."
-            adb wait-for-device
-            for i in $(seq 1 30); do
-              BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              [ "$BOOT" = "1" ] && break
-              sleep 3
-            done
-            if [ "$BOOT" != "1" ]; then
-              fail "Device boot" "Emulator did not finish booting after 90s"
-              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
-              exit 1
-            fi
-            pass "Device boot" "Emulator booted successfully"
-
-            # ── Clear logcat buffer before install ───────────────────────────
-            adb logcat -c
-            info "Logcat buffer cleared."
-
-            # ── Start logcat capture in background ───────────────────────────
-            adb logcat -v time > "$LOGCAT_FILE" 2>&1 &
-            LOGCAT_PID=$!
-            info "Logcat capture started (PID=$LOGCAT_PID)."
-
-            # ── Install APK ──────────────────────────────────────────────────
-            info "Installing APK: $APK"
-            if adb install -r -t "$APK" 2>&1; then
-              pass "APK install" "Installed without error"
-            else
-              fail "APK install" "adb install returned non-zero"
-              kill "$LOGCAT_PID" 2>/dev/null || true
-              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
-              exit 1
-            fi
-
-            # ── Grant runtime permissions (pre-grant avoids permission dialogs) ──
-            info "Granting permissions..."
-            adb shell pm grant "$APP_ID" android.permission.CAMERA            2>/dev/null || true
-            adb shell pm grant "$APP_ID" android.permission.RECORD_AUDIO      2>/dev/null || true
-            adb shell pm grant "$APP_ID" android.permission.ACCESS_FINE_LOCATION 2>/dev/null || true
-            adb shell pm grant "$APP_ID" android.permission.READ_EXTERNAL_STORAGE 2>/dev/null || true
-            adb shell pm grant "$APP_ID" android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null || true
-            adb shell pm grant "$APP_ID" android.permission.POST_NOTIFICATIONS 2>/dev/null || true
-
-            # ── Launch MainActivity ──────────────────────────────────────────
-            info "Launching $MAIN_ACTIVITY ..."
-            adb shell am start -W -n "$MAIN_ACTIVITY" > "$LAUNCH_OUT" 2>&1
-            cat "$LAUNCH_OUT"
-            LAUNCH_STATUS=$(grep "^Status:" "$LAUNCH_OUT" | awk '{print $2}')
-            LAUNCH_TIME=$(grep "^TotalTime:" "$LAUNCH_OUT" | awk '{print $2}')
-
-            if [ "$LAUNCH_STATUS" = "ok" ]; then
-              pass "MainActivity launch" "Status=ok, TotalTime=${LAUNCH_TIME}ms"
-            else
-              fail "MainActivity launch" "Status='${LAUNCH_STATUS}' (expected ok)"
-            fi
-
-            # ── Verify process is alive immediately after launch ─────────────
-            sleep 3
-            PID_INITIAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ' || true)
-            if [ -n "$PID_INITIAL" ]; then
-              pass "Initial process check" "App running with PID=$PID_INITIAL"
-            else
-              fail "Initial process check" "App process not found 3s after launch"
-              kill "$LOGCAT_PID" 2>/dev/null || true
-              echo "SMOKE_FAILED=1" >> "$GITHUB_ENV"
-              exit 1
-            fi
-
-            # ── Wait for stability period ────────────────────────────────────
-            info "App alive (PID=$PID_INITIAL). Waiting ${STABILITY_SECS}s for stability check..."
-            sleep "$STABILITY_SECS"
-
-            # ── Verify process survived the stability window ─────────────────
-            PID_FINAL=$(adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r ' || true)
-            if [ -n "$PID_FINAL" ]; then
-              pass "${STABILITY_SECS}s stability" "App still running (PID=$PID_FINAL)"
-            else
-              fail "${STABILITY_SECS}s stability" "App process died during stability window"
-            fi
-
-            # ── Stop logcat ──────────────────────────────────────────────────
-            sleep 1
-            kill "$LOGCAT_PID" 2>/dev/null || true
-            wait "$LOGCAT_PID" 2>/dev/null || true
-            info "Logcat capture stopped. Lines collected: $(wc -l < "$LOGCAT_FILE")"
-
-            # ── ANR check ────────────────────────────────────────────────────
-            if grep -qF "ANR in $APP_ID" "$LOGCAT_FILE" 2>/dev/null; then
-              fail "No ANR" "ANR detected in logcat"
-            else
-              pass "No ANR" "No Application Not Responding event detected"
-            fi
-
-            # ── Fatal Java exception check ───────────────────────────────────
-            if grep -qF "FATAL EXCEPTION" "$LOGCAT_FILE" 2>/dev/null; then
-              CRASH_LINE=$(grep -F "FATAL EXCEPTION" "$LOGCAT_FILE" | head -1)
-              fail "No fatal exception" "FATAL EXCEPTION: $CRASH_LINE"
-            else
-              pass "No fatal exception" "No FATAL EXCEPTION in logcat"
-            fi
-
-            # ── React Native bridge start ────────────────────────────────────
-            if grep -qE "ReactNative|Hermes" "$LOGCAT_FILE" 2>/dev/null; then
-              RN_LINE=$(grep -E "ReactNative|Hermes" "$LOGCAT_FILE" | head -1)
-              pass "React Native bridge" "RN/Hermes found: ${RN_LINE:0:100}"
-            else
-              fail "React Native bridge" "No ReactNative or Hermes log entries found"
-            fi
-
-            # ── Expo modules init ────────────────────────────────────────────
-            if grep -qiE "expo|ExpoModules" "$LOGCAT_FILE" 2>/dev/null; then
-              pass "Expo modules init" "Expo log entries found in logcat"
-            else
-              fail "Expo modules init" "No Expo module log entries found"
-            fi
-
-            # ── CameraService native module ──────────────────────────────────
-            if grep -qiE "CameraService|CameraFGS|CameraServiceModule" "$LOGCAT_FILE" 2>/dev/null; then
-              pass "CameraService module" "CameraService entries found in logcat"
-            else
-              fail "CameraService module" "No CameraService log entries (module may not have been invoked at startup)"
-            fi
-
-            # ── Lifecycle logs from our plugin ───────────────────────────────
-            if grep -qF "SRYLifecycle" "$LOGCAT_FILE" 2>/dev/null; then
-              LIFECYCLE_LINE=$(grep -F "SRYLifecycle" "$LOGCAT_FILE" | head -3 | tr '\n' ' ')
-              pass "SRY lifecycle logs" "${LIFECYCLE_LINE:0:120}"
-            else
-              fail "SRY lifecycle logs" "No SRYLifecycle entries — lifecycle plugin may not have injected"
-            fi
-
-            # ── JavaScript fatal error check ─────────────────────────────────
-            if grep -qiE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" 2>/dev/null; then
-              JS_ERR=$(grep -iE "JSApplicationCausedNativeException|JavascriptException|ReactNativeJS.*Error" "$LOGCAT_FILE" | head -1)
-              fail "No JS fatal error" "JS exception: ${JS_ERR:0:140}"
-            else
-              pass "No JS fatal error" "No fatal JavaScript exception detected"
-            fi
-
-            # ── Copy logcat and results to workspace ──────────────────────────
-            cp "$LOGCAT_FILE" smoke_logcat.txt
-            cp "$RESULTS_FILE" /tmp/smoke_results_final.md
-            info "Logcat saved to smoke_logcat.txt"
-
-            # ── Collect ANR traces if present ────────────────────────────────
-            adb shell ls /data/anr/ 2>/dev/null | grep -q "." && \
-              adb pull /data/anr/ anr_traces/ 2>/dev/null || true
-
-            # ── Exit with failure if any check failed ────────────────────────
-            if [ "$SMOKE_FAILED" = "1" ]; then
-              info "One or more smoke test checks FAILED."
-              exit 1
-            fi
-            info "All smoke test checks PASSED."
+          script: sh /tmp/smoke_test.sh
 
       # ────────────────────────────────────────────────────────────────────────
       # 8. Generate SMOKE_TEST_REPORT.md
