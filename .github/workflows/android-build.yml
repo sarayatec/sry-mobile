@@ -423,43 +423,43 @@ jobs:
           fi
 
           cat > BUILD_REPORT.md << REPORT
-# SRY Field — Android Build Report
+          # SRY Field — Android Build Report
 
-## Build Metadata
+          ## Build Metadata
 
-| Field | Value |
-|---|---|
-| **Status** | ✅ Build succeeded — APK validated |
-| **Git Commit** | \`${{ github.sha }}\` |
-| **Branch / Ref** | \`${{ github.ref_name }}\` |
-| **Workflow Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-| **Triggered by** | ${{ github.actor }} via ${{ github.event_name }} |
-| **Java Version** | ${JAVA_VER} |
-| **Gradle Version** | ${GRADLE_VER} |
-| **Android SDK** | compileSdk 35 / targetSdk 34 / minSdk 24 |
-| **NDK Version** | 26.1.10909125 |
-| **Build Tools** | 35.0.0 |
-| **APK Output** | \`${{ steps.apk_info.outputs.apk_path }}\` |
-| **APK Size** | ${{ steps.apk_info.outputs.apk_size }} |
-| **Signing** | debug keystore (androiddebugkey) |
-| **Hermes** | enabled |
-| **New Architecture** | disabled (Old Bridge) |
+          | Field | Value |
+          |---|---|
+          | **Status** | ✅ Build succeeded — APK validated |
+          | **Git Commit** | \`${{ github.sha }}\` |
+          | **Branch / Ref** | \`${{ github.ref_name }}\` |
+          | **Workflow Run** | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+          | **Triggered by** | ${{ github.actor }} via ${{ github.event_name }} |
+          | **Java Version** | ${JAVA_VER} |
+          | **Gradle Version** | ${GRADLE_VER} |
+          | **Android SDK** | compileSdk 35 / targetSdk 34 / minSdk 24 |
+          | **NDK Version** | 26.1.10909125 |
+          | **Build Tools** | 35.0.0 |
+          | **APK Output** | \`${{ steps.apk_info.outputs.apk_path }}\` |
+          | **APK Size** | ${{ steps.apk_info.outputs.apk_size }} |
+          | **Signing** | debug keystore (androiddebugkey) |
+          | **Hermes** | enabled |
+          | **New Architecture** | disabled (Old Bridge) |
 
-## APK Validation — ${VALIDATION_STATUS}
+          ## APK Validation — ${VALIDATION_STATUS}
 
-| Check | Result | Detail |
-|---|---|---|
-${VALIDATION_ROWS}
+          | Check | Result | Detail |
+          |---|---|---|
+          ${VALIDATION_ROWS}
 
-## Build Process
+          ## Build Process
 
-\`\`\`
-npm install                              # + postinstall patches (Camera1, expo-modules-core)
-npx expo prebuild --platform android --clean
-cd android
-./gradlew assembleRelease --stacktrace --no-daemon
-\`\`\`
-REPORT
+          \`\`\`
+          npm install                              # + postinstall patches (Camera1, expo-modules-core)
+          npx expo prebuild --platform android --clean
+          cd android
+          ./gradlew assembleRelease --stacktrace --no-daemon
+          \`\`\`
+          REPORT
 
           echo "✓ BUILD_REPORT.md generated"
           cat BUILD_REPORT.md
