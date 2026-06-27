@@ -143,6 +143,70 @@ function _deletePendingCandidates(peerId: string, reason: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── PeerConnection lifecycle instrumentation ──────────────────────────────────
+// Maps each RTCPeerConnection object to a monotonic integer ID so we can
+// distinguish "same object reused" from "new object created for same peer".
+const _pcIdMap = new WeakMap<object, number>();
+let _pcIdCounter = 0;
+
+function _pcLog(
+  event: string,
+  peerId: string,
+  pcId: number,
+  reason: string,
+  extra?: Record<string, unknown>,
+) {
+  const ts = _diagTs();
+  // Capture 3 meaningful frames — skip "Error" header and this helper itself
+  const rawStack = (new Error().stack ?? '').split('\n');
+  const frames = rawStack
+    .slice(2, 6)
+    .map(f => f.replace(/.*\(/, '').replace(')', '').replace(/.*at /, '').trim())
+    .join(' ← ');
+  const extraStr = extra ? ` extra=${JSON.stringify(extra)}` : '';
+  const line =
+    `[PC] ${ts} ${event} peer=…${peerId.slice(-6)} pc#${pcId}` +
+    ` appState=${AppState.currentState} reason=${reason}${extraStr}` +
+    ` | ${frames}`;
+  console.warn(line);
+  useDebugStore.getState().addLog(line);
+}
+
+// Assign pc to peerConns[peerId] — the ONLY place this should happen.
+// Logs DUPLICATE_PEER_CONNECTION_DETECTED if a live PC already exists for this peer.
+function _assignPeer(peerId: string, pc: RTCPeerConnection, pcId: number, reason: string) {
+  const existing = peerConns[peerId] as any;
+  if (existing) {
+    const existingId = _pcIdMap.get(existing) ?? -1;
+    _pcLog('DUPLICATE_PEER_CONNECTION_DETECTED', peerId, pcId, reason, {
+      existingPcId: existingId,
+      existingConnState: existing.connectionState ?? '?',
+      existingIceState: existing.iceConnectionState ?? '?',
+      existingSigState: existing.signalingState ?? '?',
+    });
+  }
+  peerConns[peerId] = pc;
+  _pcLog('ASSIGN_PEER_CONNS', peerId, pcId, reason);
+}
+
+// Close + delete peerConns[peerId] — the ONLY place .close()+delete should happen
+// outside of closeAllPeers (which uses its own loop).
+function _closePeer(peerId: string, reason: string) {
+  const existing = peerConns[peerId] as any;
+  const pcId = existing ? (_pcIdMap.get(existing) ?? -1) : -1;
+  if (existing) {
+    _pcLog('CLOSE_PC', peerId, pcId, reason, {
+      connState: existing.connectionState ?? '?',
+      iceState: existing.iceConnectionState ?? '?',
+      sigState: existing.signalingState ?? '?',
+    });
+    existing.close();
+  }
+  _pcLog('DELETE_PC', peerId, pcId, reason, { hadPc: !!existing });
+  delete peerConns[peerId];
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Signaling-state instrumentation ──────────────────────────────────────────
 // Temporary: proves which mechanism causes signalingState to be invalid at createAnswer.
 // Remove after mechanism confirmed.
@@ -596,6 +660,10 @@ export function stopSignaling() {
     });
   }
 
+  _pcLog('RESET_STATE', 'ALL', -1, 'stopSignaling', {
+    peerCount: Object.keys(peerConns).length,
+    hasStream: !!localStream,
+  });
   appStateSubscription?.remove();
   appStateSubscription = null;
   hideBackgroundNotif();
@@ -720,10 +788,12 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
       // Set guard BEFORE close() so the connectionstatechange event that fires
       // synchronously inside close() does not call releaseStream() via closePeer.
       isReconnecting = true;
+      _pcLog('RECONNECT_BEGIN', adminSocketId, _pcIdMap.get(peerConns[adminSocketId] as any) ?? -1, 'handleOffer_replacing', {
+        pendingCandidates: pendingCandidates[adminSocketId]?.length ?? 0,
+      });
       _queueLog(`QUEUE_OLD_PEER_CLOSE peerId=${adminSocketId} pendingBeforeClose=${pendingCandidates[adminSocketId]?.length ?? 0} isReconnecting=true`);
       sryLog('WebRTC', 'handleOffer', 'CLOSING_OLD_PEER', { adminSocketId });
-      peerConns[adminSocketId].close();
-      delete peerConns[adminSocketId];
+      _closePeer(adminSocketId, 'handleOffer_replacing_old');
       _queueLog(`QUEUE_OLD_PEER_CLOSED peerId=${adminSocketId} pendingAfterClose=${pendingCandidates[adminSocketId]?.length ?? 0} note=closePeer-may-have-fired-async`);
       sryLog('WebRTC', 'handleOffer', 'OLD_PEER_CLOSED', { adminSocketId });
     }
@@ -771,14 +841,25 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     sryLog('WebRTC', 'handleOffer', 'CREATING_PC', { adminSocketId });
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     const _myPcId = ++_sigPcId;
-    peerConns[adminSocketId] = pc;
+    _pcIdMap.set(pc as any, _myPcId);
+    _pcLog('CREATE_PC', adminSocketId, _myPcId, 'handleOffer', {
+      totalPeersBefore: Object.keys(peerConns).length,
+    });
+    _assignPeer(adminSocketId, pc, _myPcId, 'handleOffer');
     isReconnecting = false; // new peer registered — safe to release stream again if needed
+    _pcLog('RECONNECT_END', adminSocketId, _myPcId, 'handleOffer_new_peer_registered');
     _probePcT = Date.now();
     _probeIceLog(`PC created dropped_so_far=${_probeDropped} added_so_far=${_probeAdded} (candidates that arrived before this are lost)`);
     _sigLog(_myInvId, _myPcId, `PC_CREATED peerConnsHasMe=${peerConns[adminSocketId] === pc}`, pc);
     sryLog('WebRTC', 'handleOffer', 'PC_CREATED', { adminSocketId, isReconnecting });
 
     stream.getTracks().forEach(track => {
+      _pcLog('ADD_TRACK', adminSocketId, _myPcId, 'handleOffer', {
+        kind: track.kind,
+        trackId: (track.id ?? '').slice(0, 8),
+        readyState: track.readyState,
+        enabled: track.enabled,
+      });
       sryLog('WebRTC', 'addTrack', track.kind.toUpperCase(), {
         trackId: track.id,
         kind: track.kind,
@@ -925,6 +1006,9 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
   } catch (err) {
     isReconnecting = false;
+    _pcLog('RECONNECT_END', adminSocketId, _pcIdMap.get(peerConns[adminSocketId] as any) ?? -1, 'handleOffer_catch', {
+      err: String(err).slice(0, 80),
+    });
     // ── CRITICAL PROBE: state at the time of exception ────────────────────────
     _sigLog(_myInvId, _myPcId, `CATCH err=${String(err)} peerConnsIsMe=${peerConns[adminSocketId] === pc}`, pc);
     useDebugStore.getState().setException(`handleOffer: ${String(err)}`);
@@ -961,6 +1045,14 @@ async function switchCamera(facingMode: 'environment' | 'user') {
       Object.values(peerConns).map(async (pc: any) => {
         const sender = pc.getSenders?.().find((s: any) => s.track?.kind === 'video');
         if (sender) {
+          const pcId = _pcIdMap.get(pc as any) ?? -1;
+          const peerId = Object.keys(peerConns).find(id => peerConns[id] === pc) ?? 'unknown';
+          _pcLog('REPLACE_TRACK', peerId, pcId, 'switchCamera', {
+            oldTrackId: (sender.track?.id ?? '').slice(0, 8),
+            oldReadyState: sender.track?.readyState ?? '?',
+            newTrackId: (videoTrack.id ?? '').slice(0, 8),
+            newFacing: facingMode,
+          });
           await sender.replaceTrack(videoTrack);
           sryLog('Camera', 'switchCamera', 'TRACK_REPLACED', { newTrackId: videoTrack.id });
         } else {
@@ -988,8 +1080,7 @@ function closePeer(adminSocketId: string) {
     isReconnecting,
     totalBefore: Object.keys(peerConns).length,
   });
-  peerConns[adminSocketId]?.close();
-  delete peerConns[adminSocketId];
+  _closePeer(adminSocketId, 'closePeer_fn');
   // Clean up queue state for this peer
   _deletePendingCandidates(adminSocketId, 'closePeer');
   remoteDescReady.delete(adminSocketId);
@@ -1016,10 +1107,11 @@ function closeAllPeers() {
   sryLog('WebRTC', 'closeAllPeers', 'CALLED', { count });
   Object.keys(peerConns).forEach(id => {
     sryLog('WebRTC', 'closeAllPeers', 'CLOSING', { id });
-    peerConns[id]?.close();
+    _closePeer(id, 'closeAllPeers');
     _deletePendingCandidates(id, 'closeAllPeers');
     remoteDescReady.delete(id);
   });
+  _pcLog('CLEAR_PEERS', 'ALL', -1, 'closeAllPeers', { countWas: count });
   peerConns = {};
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
