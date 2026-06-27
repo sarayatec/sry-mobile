@@ -125,15 +125,20 @@ jobs:
       - name: Generate debug keystore
         working-directory: android/app
         run: |
-          keytool -genkeypair -v \
-            -keystore debug.keystore \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 \
-            -validity 10000 \
-            -storepass android \
-            -keypass android \
-            -dname "CN=Android Debug,O=Android,C=US" 2>&1
-          echo "✓ debug.keystore ready"
+          # expo prebuild often creates debug.keystore already; only generate if missing
+          if [ -f debug.keystore ]; then
+            echo "✓ debug.keystore already present (created by expo prebuild)"
+          else
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" 2>&1
+            echo "✓ debug.keystore generated"
+          fi
 
       # ────────────────────────────────────────────────────────────────────────
       # 10. Write local.properties (Gradle needs sdk.dir on Linux)
