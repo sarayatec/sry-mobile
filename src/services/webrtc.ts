@@ -143,6 +143,50 @@ function _deletePendingCandidates(peerId: string, reason: string) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── FATAL event probe — captures EVERY field at the moment each teardown callback fires ──
+// Tracks native activity state mirrored from SRYNativeEvent
+let _nativeActivityState = 'unknown'; // updated by native events: onResume/onPause/onStop/onDestroy
+
+function _fatalLog(
+  event: string,
+  peerId: string,
+  pc: any | null,
+  extra?: Record<string, unknown>,
+) {
+  const ts = _diagTs();
+  const pcId  = pc ? (_pcIdMap.get(pc) ?? -1) : -1;
+  const stack = (new Error().stack ?? '').split('\n')
+    .slice(2, 8)
+    .map((f: string) => f.replace(/\s+at\s+/, '').replace(/.*\(/, '').replace(')', '').trim())
+    .filter(Boolean)
+    .join(' ← ');
+
+  const snapshot = {
+    ts,
+    event,
+    peerId: peerId ? `…${peerId.slice(-8)}` : 'none',
+    pcId,
+    // Socket
+    'socket.connected': socket?.connected ?? false,
+    'socket.id': socket?.id?.slice(-6) ?? 'none',
+    // PC states
+    iceState:  pc?.iceConnectionState  ?? 'N/A',
+    connState: pc?.connectionState     ?? 'N/A',
+    sigState:  pc?.signalingState      ?? 'N/A',
+    // App states
+    appState:      AppState.currentState,
+    nativePiP:     _isInPiP,
+    nativeActivity: _nativeActivityState,
+    // Extra context
+    ...extra,
+  };
+
+  const line = `[FATAL] ${ts} ▶ ${event} | ${JSON.stringify(snapshot)} | STACK: ${stack}`;
+  console.warn(line);
+  useDebugStore.getState().addLog(line);
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── PeerConnection lifecycle instrumentation ──────────────────────────────────
 // Maps each RTCPeerConnection object to a monotonic integer ID so we can
 // distinguish "same object reused" from "new object created for same peer".
@@ -513,10 +557,13 @@ export function startSignaling(employeeId: string, name: string) {
     DeviceEventEmitter.addListener('SRYNativeEvent', (data: {ts: string; src: string; method: string; extra: string}) => {
       const line = `[NATIVE ${data.ts}] [${data.src}] ${data.method} ${data.extra}`;
       useDebugStore.getState().addLog(line);
-      // Track PiP state so JS-side TRACK_ENDED snapshot can include it
+      // Mirror native lifecycle state so _fatalLog snapshots are accurate
       if (data.method === 'onPictureInPictureModeChanged') {
         _isInPiP = data.extra.includes('inPiP=true');
         sryLog('Native', 'PiPStateSync', _isInPiP ? 'IN_PIP' : 'EXITED_PIP', { raw: data.extra });
+      }
+      if (['onResume','onPause','onStop','onDestroy','onStart'].includes(data.method)) {
+        _nativeActivityState = data.method; // e.g. "onPause", "onStop"
       }
     });
     sryLog('Native', 'startSignaling', 'NATIVE_EVENT_LISTENER_REGISTERED', {});
@@ -537,6 +584,20 @@ export function startSignaling(employeeId: string, name: string) {
   });
 
   socket.on('disconnect', (reason) => {
+    // Capture the state of EVERY active peer at the instant of disconnect
+    const peerSnapshots = Object.entries(peerConns).map(([pid, p]: [string, any]) => ({
+      peer: pid.slice(-6),
+      pcId: _pcIdMap.get(p) ?? -1,
+      ice: p.iceConnectionState ?? '?',
+      conn: p.connectionState ?? '?',
+      sig: p.signalingState ?? '?',
+    }));
+    const firstPc = Object.values(peerConns)[0] as any ?? null;
+    _fatalLog('socket.on("disconnect")', Object.keys(peerConns)[0] ?? '', firstPc, {
+      reason,
+      peerCount: Object.keys(peerConns).length,
+      peers: JSON.stringify(peerSnapshots),
+    });
     useDebugStore.getState().setSocket('disconnected');
     sryLog('Socket', 'disconnect', 'DISCONNECTED', {
       reason,
@@ -545,11 +606,35 @@ export function startSignaling(employeeId: string, name: string) {
     closeAllPeers();
   });
 
+  // Engine.io 'close' fires before Socket.IO 'disconnect' — catches transport-level close
+  (socket as any).io?.on('close', (reason: string) => {
+    const firstPc = Object.values(peerConns)[0] as any ?? null;
+    _fatalLog('socket.io.on("close")', Object.keys(peerConns)[0] ?? '', firstPc, {
+      reason,
+      peerCount: Object.keys(peerConns).length,
+    });
+  });
+
+  socket.on('connect_error', (err: Error) => {
+    const firstPc = Object.values(peerConns)[0] as any ?? null;
+    _fatalLog('socket.on("connect_error")', Object.keys(peerConns)[0] ?? '', firstPc, {
+      errMsg: err.message,
+      peerCount: Object.keys(peerConns).length,
+    });
+    sryLog('Socket', 'connect_error', 'ERROR', { err: err.message });
+  });
+
   socket.on('reconnect_attempt', (attempt: number) => {
+    const firstPc = Object.values(peerConns)[0] as any ?? null;
+    _fatalLog('socket.on("reconnect_attempt")', Object.keys(peerConns)[0] ?? '', firstPc, { attempt });
     sryLog('Socket', 'reconnect_attempt', 'TRYING', { attempt });
   });
 
   socket.on('reconnect', (attempt: number) => {
+    _fatalLog('socket.on("reconnect")', '', null, {
+      attempt, newSocketId: socket?.id?.slice(-6) ?? 'none',
+      peerCount: Object.keys(peerConns).length,
+    });
     sryLog('Socket', 'reconnect', 'SUCCESS', { attempt, socketId: socket?.id });
   });
 
@@ -660,6 +745,11 @@ export function stopSignaling() {
     });
   }
 
+  _fatalLog('stopSignaling()', '', null, {
+    peerCount: Object.keys(peerConns).length,
+    hasStream: !!localStream,
+    socketConnected: socket?.connected ?? false,
+  });
   _pcLog('RESET_STATE', 'ALL', -1, 'stopSignaling', {
     peerCount: Object.keys(peerConns).length,
     hasStream: !!localStream,
@@ -896,6 +986,12 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
 
     pc.addEventListener('iceconnectionstatechange', () => {
       const iceState = (pc as any).iceConnectionState ?? 'unknown';
+      // Probe every state change — not just failure — to see the full trajectory
+      _fatalLog(`pc.oniceconnectionstatechange=${iceState}`, adminSocketId, pc, {
+        pcId: _myPcId,
+        drop: _probeDropped,
+        added: _probeAdded,
+      });
       useDebugStore.getState().setIce(iceState);
       _probeIceLog(`ICE_STATE=${iceState} total_dropped=${_probeDropped} total_added=${_probeAdded}`);
       if (iceState === 'failed') {
@@ -923,15 +1019,19 @@ async function handleOffer(adminSocketId: string, offer: RTCSessionDescriptionIn
     pc.addEventListener('connectionstatechange', () => {
       const s = (pc as any).connectionState;
       const peerConnsIsMe = peerConns[adminSocketId] === pc;
+      // Log EVERY state transition — the full trajectory matters
+      _fatalLog(`pc.onconnectionstatechange=${s}`, adminSocketId, pc, {
+        pcId: _myPcId,
+        peerConnsIsMe,
+        willTriggerClose: s === 'failed' || s === 'closed',
+      });
       _sigLog(_myInvId, _myPcId, `connectionstatechange=${s} peerConnsIsMe=${peerConnsIsMe} willClose=${s === 'failed' || s === 'closed'}`, pc);
       sryLog('WebRTC', 'connectionstatechange', (s ?? 'unknown').toUpperCase(), {
         adminSocketId,
         peerCount: Object.keys(peerConns).length,
       });
       if (s === 'failed' || s === 'closed') {
-        // ── QUEUE_LIFECYCLE: log that connectionstatechange is triggering closePeer ──
         _queueLog(`QUEUE_CONN_STATE_TRIGGER_CLOSE peerId=${adminSocketId} connState=${s} pendingSize=${pendingCandidates[adminSocketId]?.length ?? 0} peerConnsIsMe=${peerConnsIsMe}`);
-        // ─────────────────────────────────────────────────────────────────────────────
         closePeer(adminSocketId);
       }
     });
@@ -1069,9 +1169,12 @@ async function switchCamera(facingMode: 'environment' | 'user') {
 function closePeer(adminSocketId: string) {
   const peerExists = !!peerConns[adminSocketId];
   const targetPc = peerConns[adminSocketId] as any;
-  // ── QUEUE_LIFECYCLE: log closePeer call ───────────────────────────────────
+  _fatalLog('closePeer()', adminSocketId, targetPc ?? null, {
+    isReconnecting,
+    peerExists,
+    totalPeers: Object.keys(peerConns).length,
+  });
   _queueLog(`QUEUE_CLOSE_PEER_CALLED peerId=${adminSocketId} pendingSize=${pendingCandidates[adminSocketId]?.length ?? 0} isReconnecting=${isReconnecting} offerPeerId=${_queueOfferPeerId} peerIdMatch=${adminSocketId === _queueOfferPeerId}`);
-  // ─────────────────────────────────────────────────────────────────────────
   _sigLog(_sigInvocation, _sigPcId,
     `closePeer CALLED peerExists=${peerExists} sig=${targetPc?.signalingState ?? 'N/A'} conn=${targetPc?.connectionState ?? 'N/A'}`);
   sryLog('WebRTC', 'closePeer', 'CALLED', {
@@ -1089,6 +1192,10 @@ function closePeer(adminSocketId: string) {
   if (remaining === 0) {
     hideBackgroundNotif();
     if (Platform.OS === 'android') {
+      _fatalLog('setStreaming(false)', adminSocketId, peerConns[adminSocketId] as any ?? null, {
+        caller: 'closePeer',
+        remaining: Object.keys(peerConns).length,
+      });
       sryLog('Service', 'closePeer', 'SET_STREAMING_FALSE', {});
       setStreaming(false);
       setAutoEnterPiP(false);
@@ -1104,6 +1211,12 @@ function closePeer(adminSocketId: string) {
 
 function closeAllPeers() {
   const count = Object.keys(peerConns).length;
+  const firstPc = Object.values(peerConns)[0] as any ?? null;
+  _fatalLog('closeAllPeers()', Object.keys(peerConns)[0] ?? '', firstPc, {
+    totalPeers: count,
+    isReconnecting,
+    allPeerIds: Object.keys(peerConns).map(id => id.slice(-6)).join(','),
+  });
   sryLog('WebRTC', 'closeAllPeers', 'CALLED', { count });
   Object.keys(peerConns).forEach(id => {
     sryLog('WebRTC', 'closeAllPeers', 'CLOSING', { id });
@@ -1115,6 +1228,10 @@ function closeAllPeers() {
   peerConns = {};
   hideBackgroundNotif();
   if (Platform.OS === 'android') {
+    _fatalLog('setStreaming(false)', '', null, {
+      caller: 'closeAllPeers',
+      peersWere: count,
+    });
     sryLog('Service', 'closeAllPeers', 'SET_STREAMING_FALSE', {});
     setStreaming(false);
     setAutoEnterPiP(false);
