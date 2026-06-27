@@ -46,7 +46,7 @@ class CameraServiceModule : Module() {
       modLog("startSession", "CALLED", "")
       val ctx = appContext.reactContext ?: run {
         modLog("startSession", "NO_CONTEXT", "")
-        return@Function
+        return@Function Unit
       }
       launchService(ctx)
     }
@@ -56,7 +56,7 @@ class CameraServiceModule : Module() {
       modLog("stopSession", "CALLED", "")
       val ctx = appContext.reactContext ?: run {
         modLog("stopSession", "NO_CONTEXT", "")
-        return@Function
+        return@Function Unit
       }
       ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit().putBoolean(KEY, false).apply()
@@ -121,14 +121,14 @@ class CameraServiceModule : Module() {
     // Back-compat aliases
     Function("start") {
       modLog("start", "CALLED", "(back-compat alias)")
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function Unit
       ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit().putBoolean(KEY, true).apply()
       launchService(ctx)
     }
     Function("stop") {
       modLog("stop", "CALLED", "(back-compat alias)")
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function Unit
       ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         .edit().putBoolean(KEY, false).apply()
     }
@@ -231,7 +231,7 @@ class CameraServiceModule : Module() {
 
     // Delete debug.log and crash.log.
     Function("clearLogs") {
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function Unit
       listOf("debug.log", "crash.log").forEach { name ->
         try { java.io.File(ctx.filesDir, name).delete() } catch (_: Exception) {}
       }
@@ -262,16 +262,16 @@ class CameraServiceModule : Module() {
     // foreground service (and the camera capture) when the screen turns off.
     Function("requestDisableBatteryOptimization") {
       modLog("requestDisableBatteryOptimization", "CALLED", "")
-      val activity = appContext.currentActivity ?: appContext.reactContext ?: return@Function
+      val activity = appContext.currentActivity ?: appContext.reactContext ?: return@Function Unit
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
         modLog("requestDisableBatteryOptimization", "LEGACY_SKIP", "")
-        return@Function
+        return@Function Unit
       }
-      val ctx = appContext.reactContext ?: return@Function
+      val ctx = appContext.reactContext ?: return@Function Unit
       val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
       if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) {
         modLog("requestDisableBatteryOptimization", "ALREADY_IGNORED", "")
-        return@Function
+        return@Function Unit
       }
       try {
         val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {

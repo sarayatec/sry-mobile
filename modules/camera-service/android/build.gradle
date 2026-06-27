@@ -34,6 +34,7 @@ android {
 }
 
 repositories {
+  maven { url "$rootDir/../node_modules/react-native/android" }
   mavenCentral()
   google()
 }
@@ -41,4 +42,5 @@ repositories {
 dependencies {
   implementation project(':expo-modules-core')
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${safeExtGet("kotlinVersion", "1.9.25")}"
+  compileOnly "com.facebook.react:react-android:+"
 }
