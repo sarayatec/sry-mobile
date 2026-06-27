@@ -622,7 +622,7 @@ jobs:
             -camera-front none
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             APK="${{ steps.apk.outputs.path }}"
             APP_ID="${{ env.APP_ID }}"
             MAIN_ACTIVITY="${{ env.MAIN_ACTIVITY }}"
