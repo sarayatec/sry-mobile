@@ -733,7 +733,8 @@ jobs:
           if grep -qiE "CameraService|CameraFGS|CameraServiceModule" "$LOGCAT_FILE" 2>/dev/null; then
             pass "CameraService module" "CameraService entries found in logcat"
           else
-            fail "CameraService module" "No CameraService log entries (expected if not invoked at startup)"
+            printf '| %s | WARN | %s |\n' "CameraService module" "No CameraService log entries (module only loads when streaming starts)" >> "$RESULTS_FILE"
+            info "WARN: CameraService not in logcat - expected when streaming not triggered"
           fi
 
           if grep -qF "SRYLifecycle" "$LOGCAT_FILE" 2>/dev/null; then
