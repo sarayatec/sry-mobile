@@ -10,6 +10,7 @@ import {
   MediaStream,
 } from 'react-native-webrtc';
 import * as Notifications from 'expo-notifications';
+import api from './api';
 import { sryLog, setLogSessionId } from '../utils/log';
 import { useDebugStore } from '../stores/debugStore';
 import type { SignalingPhase } from '../stores/debugStore';
@@ -626,6 +627,23 @@ export function startSignaling(employeeId: string, name: string) {
     useDebugStore.getState().setSocket('connected', socket?.id ?? '');
     socket!.emit('employee:register', { employeeId, name });
     sryLog('Socket', 'connect', 'REGISTERED', { employeeId, name });
+
+    // Register push token and send to signal server + API
+    (async () => {
+      try {
+        let { status } = await Notifications.getPermissionsAsync();
+        if (status !== 'granted') {
+          const { status: s } = await Notifications.requestPermissionsAsync();
+          status = s;
+        }
+        if (status !== 'granted') return;
+        const t = await Notifications.getExpoPushTokenAsync({
+          projectId: 'e6c00311-d725-47ba-9951-8efabf5a0457',
+        });
+        socket?.emit('employee:push-token', { pushToken: t.data });
+        await api.post('/mobile/push-token', { token: t.data }).catch(() => {});
+      } catch {}
+    })();
   });
 
   socket.on('disconnect', (reason) => {
