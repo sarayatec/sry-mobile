@@ -27,6 +27,9 @@ jobs:
       - name: Install dependencies
         run: npm install --legacy-peer-deps
 
+      - name: Install missing native deps
+        run: npm install @react-native-community/netinfo --legacy-peer-deps
+
       - name: Install Expo CLI
         run: npm install -g @expo/cli
 
