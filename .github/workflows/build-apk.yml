@@ -16,7 +16,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -25,10 +24,7 @@ jobs:
           java-version: '17'
 
       - name: Install dependencies
-        run: npm install --legacy-peer-deps
-
-      - name: Install missing native deps
-        run: npm install @react-native-community/netinfo --legacy-peer-deps
+        run: npm install --legacy-peer-deps --no-package-lock
 
       - name: Install Expo CLI
         run: npm install -g @expo/cli
